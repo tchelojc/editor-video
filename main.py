@@ -1,4345 +1,2268 @@
-import streamlit as st
-import streamlit.components.v1 as components
-import subprocess
+"""
+╔══════════════════════════════════════════════════════════════════════════════╗
+║   STUDIO PRO CREATOR AI — v6.0 (Timeline de Efeitos + Guia Interativo)      ║
+║   Integração completa: Filtros • Vídeo • GIF • IA • Screenshot • TTS • ...  ║
+║   + Edição segmentada por tempo + Ajuda contextual                           ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+"""
+
 import os
-import json
-import tempfile
-import numpy as np
-from datetime import datetime, timedelta
-import base64
-import time
-import warnings
-from PIL import Image
-import io
 import sys
-import wave
-import struct
-from typing import Optional, Dict, List, Tuple, Any, Union
-from dataclasses import dataclass, asdict, field
-import re
+import subprocess
+import warnings
+import tempfile
+import time
+import io
+import json
 import math
-import shutil
-from pathlib import Path
-import threading
-import queue
+import random
+import re
 import uuid
-import concurrent.futures
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import shutil
+import base64
+import asyncio
 import traceback
+from datetime import datetime
+from typing import Dict, Any, List, Tuple, Optional, Union
+from io import BytesIO
+from pathlib import Path
+from dataclasses import dataclass, field, asdict
 
-warnings.filterwarnings('ignore')
+warnings.filterwarnings("ignore")
 
-# ==========================
-# CLASSES E ESTRUTURAS DE DADOS COMPLETAS
-# ==========================
-@dataclass
-class VoiceProfile:
-    """Perfil de voz para TTS com edge-tts"""
-    name: str
-    language: str
-    voice_code: str
-    speed: float = 1.0
-    pitch: float = 1.0
-    volume: float = 1.0
-    voice_type: str = "neural"
-    
-    def to_dict(self):
-        return asdict(self)
-
-@dataclass
-class VideoPart:
-    """Partição de vídeo para processamento em partes"""
-    part_id: int
-    input_path: str
-    output_path: str
-    start_time: float
-    end_time: float
-    duration: float
-    size_mb: float
-    status: str = "pending"
-    edited: bool = False
-    audio_path: str = ""
-    text_transcript: str = ""
-    ai_prompts: Dict[str, str] = field(default_factory=dict)
-    effects: List[str] = field(default_factory=list)
-    thumbnail: str = ""
-    
-    def get_info(self):
-        return {
-            'id': self.part_id,
-            'duration': self.duration,
-            'start': self.start_time,
-            'end': self.end_time,
-            'status': self.status
-        }
-
-@dataclass
-class AudioSegmentData:
-    """Segmento de áudio para análise"""
-    id: str
-    start_time: float
-    end_time: float
-    duration: float
-    text: str = ""
-    theme: str = ""
-    keywords: List[str] = field(default_factory=list)
-    sentiment: str = ""
-    volume_level: float = 0.0
-    prompts: Dict[str, str] = field(default_factory=dict)
-
-@dataclass
-class VideoAnalysis:
-    """Análise completa do vídeo - VERSÃO ESTENDIDA"""
-    themes: List[str]
-    key_moments: List[Dict]
-    improvement_suggestions: List[str]
-    ai_prompts: Dict[str, str]
-    transcript_summary: str
-    mood: str = "neutral"
-    # Atributos estendidos para análise aprimorada
-    target_audience: Dict[str, Any] = field(default_factory=dict)
-    optimized_keywords: List[str] = field(default_factory=list)
-    sentiment_scores: Dict[str, float] = field(default_factory=dict)
-    estimated_engagement: int = 0
-    narrative_structure: Dict[str, Any] = field(default_factory=dict)
-    theme_scores: Dict[str, float] = field(default_factory=dict)
-
-# ==========================
-# NOVAS CLASSES PARA ESTRUTURA NARRATIVA
-# ==========================
-@dataclass
-class NarrativeAct:
-    """Representa um ato da narrativa"""
-    number: int
-    title: str
-    description: str
-    emotional_tone: str  # ex: "misterioso", "energético", "reflexivo"
-    visual_style: str    # ex: "dark", "vibrante", "suave"
-    target_duration: float  # duração desejada em segundos (opcional)
-    text_content: str = ""  # roteiro do ato
-    audio_path: str = ""
-    video_path: str = ""
-    prompts: Dict[str, str] = field(default_factory=dict)  # prompts gerados
-    analysis: Optional[VideoAnalysis] = None
-
-@dataclass
-class NarrativeTemplate:
-    """Template de estrutura narrativa (ex: 4 atos)"""
-    name: str
-    acts: List[NarrativeAct]
-    total_duration: float = 0.0
-    description: str = ""
-
-# ==========================
-# CONFIGURAÇÕES E CONSTANTES
-# ==========================
-# Perfis de voz atualizados com edge-tts
-DEFAULT_VOICE_PROFILES = {
-    "masculina_padrao": VoiceProfile("Masculina Padrão", "pt-BR", "pt-BR-AntonioNeural", 1.0, 1.0, 1.0, "neural"),
-    "feminina_suave": VoiceProfile("Feminina Suave", "pt-BR", "pt-BR-FranciscaNeural", 0.9, 1.2, 0.9, "neural"),
-    "masculina_profunda": VoiceProfile("Masculina Profunda", "pt-BR", "pt-BR-DonatoNeural", 0.8, 0.8, 1.1, "neural"),
-    "feminina_energica": VoiceProfile("Feminina Energética", "pt-BR", "pt-BR-BrendaNeural", 1.2, 1.1, 1.0, "neural"),
-    "narrador_noticias": VoiceProfile("Narrador Notícias", "pt-BR", "pt-BR-FabioNeural", 1.0, 1.0, 1.0, "neural"),
-    "crianca_animada": VoiceProfile("Criança Animada", "pt-BR", "pt-BR-LeilaNeural", 1.3, 1.5, 0.8, "neural"),
-    "masculina_young": VoiceProfile("Masculina Jovem", "pt-BR", "pt-BR-JulioNeural", 1.1, 1.1, 1.0, "neural"),
-    "feminina_calm": VoiceProfile("Feminina Calma", "pt-BR", "pt-BR-ManuelaNeural", 0.9, 1.0, 0.9, "neural"),
-}
-
-VOICE_FALLBACK_MAPPING = {
-    "pt-BR-DonatoNeural": "pt-BR-AntonioNeural",  # Masculina Profunda -> Masculina Padrão
-    "pt-BR-BrendaNeural": "pt-BR-FranciscaNeural", # Feminina Energética -> Feminina Suave
-    "pt-BR-FabioNeural": "pt-BR-AntonioNeural",    # Narrador Notícias -> Masculina Padrão
-    "pt-BR-LeilaNeural": "pt-BR-FranciscaNeural",  # Criança Animada -> Feminina Suave
-    "pt-BR-JulioNeural": "pt-BR-AntonioNeural",    # Masculina Jovem -> Masculina Padrão
-    "pt-BR-ManuelaNeural": "pt-BR-FranciscaNeural" # Feminina Calma -> Feminina Suave
-}
-
-# Efeitos de áudio aprimorados
-AUDIO_EFFECTS = {
-    "eco": {
-        "name": "Eco",
-        "description": "Adiciona efeito de eco",
-        "params": {"intensity": 0.3, "delay": 0.15, "feedback": 0.4}
-    },
-    "reverb": {
-        "name": "Reverberação",
-        "description": "Simula ambientes acústicos",
-        "params": {"room_size": 0.5, "damping": 0.5, "wet_level": 0.3}
-    },
-    "equalizador": {
-        "name": "Equalizador",
-        "description": "Ajusta frequências específicas",
-        "params": {"bass": 1.0, "mid": 1.0, "treble": 1.0}
-    },
-    "compressor": {
-        "name": "Compressor",
-        "description": "Normaliza volumes altos e baixos",
-        "params": {"threshold": -20, "ratio": 4.0, "attack": 5, "release": 50}
-    },
-    "noise_reduction": {
-        "name": "Redução de Ruído",
-        "description": "Remove ruído de fundo",
-        "params": {"intensity": 0.7, "sensitivity": 0.5}
-    },
-    "chorus": {
-        "name": "Coro",
-        "description": "Cria efeito de múltiplas vozes",
-        "params": {"depth": 0.5, "rate": 1.0, "mix": 0.5}
-    }
-}
-
-# Efeitos de vídeo
-VIDEO_EFFECTS = {
-    "normal": {"name": "Normal", "filter": "null"},
-    "preto_e_branco": {"name": "Preto e Branco", "filter": "colorchannelmixer=.299:.587:.114"},
-    "sepia": {"name": "Sépia", "filter": "colorchannelmixer=.393:.769:.189:.349:.686:.168:.272:.534:.131"},
-    "vintage": {"name": "Vintage", "filter": "curves=preset=vintage"},
-    "alto_contraste": {"name": "Alto Contraste", "filter": "eq=contrast=1.5:brightness=-0.05"},
-    "blur_suave": {"name": "Blur Suave", "filter": "boxblur=5:1"},
-    "sharpen": {"name": "Nitidez", "filter": "unsharp=5:5:1.0"},
-    "hdr": {"name": "HDR", "filter": "eq=gamma=1.5:contrast=1.2:saturation=1.3"},
-    "cinematic": {"name": "Cinematográfico", "filter": "colorbalance=rs=0.3:gs=0.2:bs=0.1"},
-    "glitch": {"name": "Glitch", "filter": "glitch=amount=10"},
-    "vignette": {"name": "Vignette", "filter": "vignette=angle=30:strength=0.5"}
-}
-
-# Temas para IA
-THEMES_FOR_IA = {
-    "educacao": {
-        "name": "Educação",
-        "prompt_templates": {
-            "imagem": "Crie uma imagem educativa sobre {topic} com cores vibrantes",
-            "audio": "Narração educativa clara sobre {topic}",
-            "texto": "Texto explicativo sobre {topic} para aprendizado",
-            "video": "Vídeo educativo sobre {topic} com animações explicativas",
-            "storyboard": "Sequência visual educativa sobre {topic}"
-        }
-    },
-    "marketing": {
-        "name": "Marketing",
-        "prompt_templates": {
-            "imagem": "Imagem impactante para campanha de marketing sobre {topic}",
-            "audio": "Narração persuasiva para comercial sobre {topic}",
-            "texto": "Texto persuasivo para campanha de marketing sobre {topic}",
-            "video": "Vídeo promocional sobre {topic} com call-to-action",
-            "storyboard": "Storyboard para comercial sobre {topic}"
-        }
-    },
-    "entretenimento": {
-        "name": "Entretenimento",
-        "prompt_templates": {
-            "imagem": "Cena divertida e envolvente sobre {topic}",
-            "audio": "Narração animada e divertida sobre {topic}",
-            "texto": "Texto entretenimento sobre {topic} com humor",
-            "video": "Vídeo de entretenimento sobre {topic} com ritmo dinâmico",
-            "storyboard": "Sequência divertida sobre {topic}"
-        }
-    },
-    "noticias": {
-        "name": "Notícias",
-        "prompt_templates": {
-            "imagem": "Imagem séria e informativa sobre {topic}",
-            "audio": "Narração jornalística sobre {topic}",
-            "texto": "Texto informativo sobre {topic} em estilo jornalístico",
-            "video": "Vídeo informativo sobre {topic} com gráficos explicativos",
-            "storyboard": "Storyboard jornalístico sobre {topic}"
-        }
-    },
-    "tecnologia": {
-        "name": "Tecnologia",
-        "prompt_templates": {
-            "imagem": "Imagem futurista sobre {topic} com elementos tech",
-            "audio": "Narração tecnológica sobre {topic} com efeitos sonoros modernos",
-            "texto": "Texto técnico explicativo sobre {topic}",
-            "video": "Vídeo tecnológico sobre {topic} com animações 3D",
-            "storyboard": "Sequência tecnológica sobre {topic}"
-        }
-    }
-}
-
-# Templates narrativos pré-definidos
-NARRATIVE_TEMPLATES = {
-    "4_atos_alma_fluxo": NarrativeTemplate(
-        name="Jornada do Observador (4 Atos)",
-        acts=[
-            NarrativeAct(1, "O Convite", "Apresentação pessoal e visão", "misterioso", "dark", 120),
-            NarrativeAct(2, "As Ferramentas", "Demonstração dos módulos", "energético", "vibrante", 300),
-            NarrativeAct(3, "O Coração", "Filosofia e propósito", "reflexivo", "suave", 240),
-            NarrativeAct(4, "A Realidade", "Transparência e chamada para ação", "íntimo", "clean", 120),
-        ],
-        description="Estrutura em 4 atos usada no lançamento da Alma Fluxo"
-    ),
-    "3_atos_classico": NarrativeTemplate(
-        name="Clássico (3 Atos)",
-        acts=[
-            NarrativeAct(1, "Introdução", "Apresentação do problema", "informativo", "neutro", 60),
-            NarrativeAct(2, "Desenvolvimento", "Solução e benefícios", "entusiasmado", "dinâmico", 180),
-            NarrativeAct(3, "Conclusão", "Resumo e CTA", "convincente", "clean", 60),
-        ],
-        description="Estrutura narrativa tradicional"
-    )
-}
-
-# Mapeamento tom -> chave do perfil de voz
-TONE_TO_VOICE = {
-    "Informativo": "masculina_padrao",
-    "Inspirador": "feminina_suave",
-    "Empolgante": "masculina_profunda",
-    "Urgente": "narrador_noticias",
-    "Misterioso": "masculina_profunda",
-    "Reflexivo": "feminina_calm",
-    "Íntimo": "feminina_suave",
-    "Convincente": "narrador_noticias",
-    "Entusiasmado": "feminina_energica",
-    # Adicie outros conforme necessário
-}
-
-# Biblioteca de músicas (caminhos para arquivos MP3)
-MUSIC_LIBRARY = {
-    "Informativo": "assets/music/informativo.mp3",
-    "Inspirador": "assets/music/inspirador.mp3",
-    "Empolgante": "assets/music/empolgante.mp3",
-    "Urgente": "assets/music/urgente.mp3",
-    "Misterioso": "assets/music/misterioso.mp3",
-    "Reflexivo": "assets/music/reflexivo.mp3",
-    "default": "assets/music/default.mp3",
-}
-
-# ==========================
-# SISTEMA DE DEPENDÊNCIAS
-# ==========================
+# ==============================================================================
+# VERIFICAÇÃO E INSTALAÇÃO DE DEPENDÊNCIAS
+# ==============================================================================
 def check_and_install_dependencies():
-    """Verifica e instala todas as dependências necessárias"""
-    dependencies = {
-        "ffmpeg": False,
-        "edge_tts": False,
-        "whisper": False,
-        "pydub": False,
-        "moviepy": False,
-        "speech_recognition": False,
+    """Verifica e instala pacotes essenciais."""
+    required = {
+        "streamlit": "streamlit",
+        "PIL": "Pillow",
+        "numpy": "numpy",
+        "cv2": "opencv-python",
+        "requests": "requests",
+        "moviepy": "moviepy",
+        "imageio_ffmpeg": "imageio-ffmpeg",
+        "edge_tts": "edge-tts",
+        "whisper": "openai-whisper",
     }
-    
-    # Verifica FFmpeg
-    try:
-        subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
-        dependencies["ffmpeg"] = True
-    except:
-        st.warning("FFmpeg não encontrado. Algumas funcionalidades serão limitadas.")
-    
-    # Instala pacotes Python
-    packages_to_install = []
-    
-    try:
-        import edge_tts
-        dependencies["edge_tts"] = True
-    except ImportError:
-        packages_to_install.append("edge-tts")
-    
-    try:
-        import whisper
-        dependencies["whisper"] = True
-    except ImportError:
-        packages_to_install.append("openai-whisper")
-    
-    try:
-        from pydub import AudioSegment
-        dependencies["pydub"] = True
-    except ImportError:
-        packages_to_install.append("pydub")
-    
-    try:
-        import moviepy.editor as mp
-        dependencies["moviepy"] = True
-    except ImportError:
-        packages_to_install.append("moviepy")
-    
-    try:
-        import speech_recognition as sr
-        dependencies["speech_recognition"] = True
-    except ImportError:
-        packages_to_install.append("SpeechRecognition")
-    
-    # Tenta instalar pacotes faltantes
-    if packages_to_install:
-        with st.spinner("Instalando dependências necessárias..."):
-            for package in packages_to_install:
-                try:
-                    subprocess.check_call([sys.executable, "-m", "pip", "install", package, "--quiet"])
-                    dependencies[package.split("-")[0] if "-" in package else package] = True
-                except:
-                    st.warning(f"Não foi possível instalar {package}")
-    
-    return dependencies
+    missing = []
+    for mod, pkg in required.items():
+        try:
+            __import__(mod)
+        except ImportError:
+            missing.append(pkg)
+    if missing:
+        print(f"Instalando pacotes faltantes: {missing}")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet"] + missing)
 
-# ==========================
-# CONFIGURAÇÃO DO STREAMLIT
-# ==========================
+check_and_install_dependencies()
+
+# ==============================================================================
+# IMPORTS DEFINITIVOS (com detecção aprimorada do MoviePy)
+# ==============================================================================
+import streamlit as st
+from PIL import Image, ImageDraw, ImageFilter, ImageEnhance, ImageOps, ImageColor, ImageFont
+import numpy as np
+import requests
+import cv2
+
+# ---------- MoviePy com fallback e configuração explícita do FFmpeg ----------
+VIDEO_SUPPORT = False
+VideoFileClip = None
+concatenate_videoclips = None
+
+try:
+    # Tenta importar da forma antiga (MoviePy 1.x)
+    from moviepy.editor import VideoFileClip, concatenate_videoclips
+    VIDEO_SUPPORT = True
+except ImportError:
+    try:
+        # Tenta importar da forma nova (MoviePy 2.x)
+        from moviepy.video.io.VideoFileClip import VideoFileClip
+        # Procura a função de concatenação em locais conhecidos
+        try:
+            from moviepy.video.compositing.concatenate import concatenate_videoclips
+        except ImportError:
+            try:
+                from moviepy.video.fx.concat import concatenate_videoclips
+            except ImportError:
+                # Fallback: usa a função nativa do pacote principal se existir
+                try:
+                    from moviepy import concatenate_videoclips
+                except ImportError:
+                    # Função dummy para evitar crash (edição segmentada ficará limitada)
+                    def concatenate_videoclips(clips):
+                        if not clips: return None
+                        return clips[0]  # retorna o primeiro clipe
+        VIDEO_SUPPORT = True
+    except ImportError as e:
+        st.error(f"❌ MoviePy não instalado: {e}")
+
+if VIDEO_SUPPORT:
+    # Configura explicitamente o FFmpeg usando imageio-ffmpeg
+    try:
+        import imageio_ffmpeg
+        ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+        os.environ["IMAGEIO_FFMPEG_EXE"] = ffmpeg_path
+        # Para MoviePy 1.x
+        try:
+            from moviepy.config import change_settings
+            change_settings({"FFMPEG_BINARY": ffmpeg_path})
+        except ImportError:
+            # Para MoviePy 2.x a configuração é via environment variable
+            pass
+        # Não exibe mensagem de sucesso para não poluir a interface (já temos o status na sidebar)
+    except Exception as e:
+        VIDEO_SUPPORT = False
+        st.warning(f"⚠️ FFmpeg não configurado: {e}")
+        
+# edge-tts
+try:
+    import edge_tts
+    TTS_SUPPORT = True
+except ImportError:
+    TTS_SUPPORT = False
+
+# Whisper
+try:
+    import whisper
+    WHISPER_SUPPORT = True
+except ImportError:
+    WHISPER_SUPPORT = False
+
+# ==============================================================================
+# CONFIGURAÇÃO DA PÁGINA
+# ==============================================================================
 st.set_page_config(
-    page_title="Studio Pro Editor AI - Edição Completa",
+    page_title="Studio Pro Creator AI",
     page_icon="🎬",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
-# CSS Personalizado Completo (mantido igual ao original)
+# ==============================================================================
+# CSS PROFISSIONAL (Ajustado para evitar erros de DOM)
+# ==============================================================================
 st.markdown("""
 <style>
-    .main-header {
-        background: linear-gradient(90deg, #1a1a2e 0%, #16213e 100%);
-        padding: 2rem;
-        border-radius: 15px;
-        margin-bottom: 2rem;
-        text-align: center;
-        border-left: 5px solid #4cc9f0;
-    }
-    .main-header h1 {
-        color: white;
-        margin: 0;
-        font-size: 2.5rem;
-        text-shadow: 0 2px 10px rgba(76,201,240,0.3);
-    }
-    .main-header p {
-        color: #a0a0a0;
-        margin: 0.5rem 0 0;
-        font-size: 1rem;
-    }
-    .status-indicator {
-        display: inline-block;
-        padding: 0.25rem 0.75rem;
-        border-radius: 20px;
-        font-size: 0.8rem;
-        font-weight: 500;
-    }
-    .status-ready {
-        background: #00b894;
-        color: white;
-    }
-    .status-processing {
-        background: #fdcb6e;
-        color: #2d3436;
-    }
-    .status-missing {
-        background: #d63031;
-        color: white;
-    }
-    .timeline-container {
-        background: #0f0f1a;
-        border-radius: 12px;
-        padding: 2rem 1rem;
-        margin: 1rem 0;
-        position: relative;
-        height: 100px;
-        border: 1px solid #2d2d3a;
-    }
-    .timeline-segment {
-        position: absolute;
-        height: 60px;
-        border-radius: 8px;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        color: white;
-        font-weight: bold;
-        cursor: pointer;
-        transition: transform 0.2s;
-        border: 1px solid rgba(255,255,255,0.2);
-        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-    }
-    .timeline-segment:hover {
-        transform: translateY(-5px);
-        z-index: 10;
-    }
-    .stButton button {
-        border-radius: 8px;
-        font-weight: 500;
-        transition: all 0.2s;
-    }
-    .stButton button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 4px 12px rgba(76,201,240,0.3);
-    }
-    div[data-testid="stExpander"] {
-        background: linear-gradient(135deg, #1e1e2e 0%, #1a1a2a 100%);
-        border: 1px solid #2d2d3a;
-        border-radius: 12px;
-        margin-bottom: 1rem;
-    }
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
-        background: #0f0f1a;
-        padding: 0.5rem;
-        border-radius: 12px;
-    }
-    .stTabs [data-baseweb="tab"] {
-        border-radius: 8px;
-        padding: 0.5rem 1rem;
-        background: transparent;
-        color: #a0a0a0;
-    }
-    .stTabs [aria-selected="true"] {
-        background: linear-gradient(135deg, #4cc9f0 0%, #4361ee 100%);
-        color: white !important;
-    }
-    .stProgress > div > div {
-        background: linear-gradient(90deg, #4cc9f0, #4361ee);
-        border-radius: 4px;
-    }
-    .stSelectbox label, .stMultiselect label {
-        color: #a0a0a0 !important;
-    }
-    .stTextArea textarea {
-        background: #1e1e2e;
-        color: white;
-        border: 1px solid #2d2d3a;
-        border-radius: 8px;
-    }
-    .stTextInput input {
-        background: #1e1e2e;
-        color: white;
-        border: 1px solid #2d2d3a;
-        border-radius: 8px;
-    }
-    .stSlider div[data-baseweb="slider"] {
-        background: #2d2d3a;
-    }
-    .stSlider div[role="slider"] {
-        background: #4cc9f0;
-    }
-    hr {
-        border-color: #2d2d3a;
-    }
-    .stAlert {
-        background: rgba(76,201,240,0.1);
-        border: 1px solid rgba(76,201,240,0.2);
-        border-radius: 8px;
-        color: white;
-    }
-    .stAlert [data-baseweb="notification"] {
-        background: transparent;
-    }
-    .stInfo {
-        background: rgba(76,201,240,0.15);
-        border-left: 4px solid #4cc9f0;
-    }
-    .stWarning {
-        background: rgba(253,203,110,0.15);
-        border-left: 4px solid #fdcb6e;
-    }
-    .stError {
-        background: rgba(214,48,49,0.15);
-        border-left: 4px solid #d63031;
-    }
-    .stSuccess {
-        background: rgba(0,184,148,0.15);
-        border-left: 4px solid #00b894;
-    }
+@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;600;700&family=JetBrains+Mono:wght@400;700&display=swap');
+:root{
+  --bg:#080b10; --card:#0f1622; --border:rgba(0,229,255,.18);
+  --c1:#00e5ff; --c2:#ff4d6d; --c3:#a8ff3e; --gold:#ffd166;
+  --txt:#e2e8f0; --dim:#6b7280;
+  --glow:0 0 24px rgba(0,229,255,.28);
+}
+.stApp{background:var(--bg);font-family:'Rajdhani',sans-serif;}
+.main{background:var(--bg);padding:0 1rem;}
+
+.hdr{background:linear-gradient(135deg,#09111f,#0d1b2a,#071018);
+  border:1px solid var(--c1);border-radius:16px;padding:2rem 2.2rem;
+  margin-bottom:1.6rem;position:relative;overflow:hidden;
+  box-shadow:var(--glow),inset 0 1px 0 rgba(0,229,255,.08);}
+.hdr h1{font-family:'Rajdhani',sans-serif;font-size:2.8rem;font-weight:700;
+  margin:0;color:var(--c1);
+  text-shadow:0 0 28px rgba(0,229,255,.7),0 0 56px rgba(0,229,255,.2);
+  letter-spacing:2px;}
+.hdr p{font-family:'JetBrains Mono',monospace;font-size:.82rem;
+  color:var(--dim);margin:.4rem 0 0;letter-spacing:.8px;}
+.badge{display:inline-block;background:rgba(0,229,255,.09);
+  border:1px solid var(--c1);border-radius:20px;padding:.15rem .8rem;
+  font-size:.72rem;color:var(--c1);margin:.4rem .3rem 0 0;
+  font-family:'JetBrains Mono',monospace;}
+.badge-warn{border-color:var(--gold);color:var(--gold);background:rgba(255,209,102,.08);}
+.badge-err {border-color:var(--c2);color:var(--c2);background:rgba(255,77,109,.08);}
+
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;
+  padding:1.2rem;margin:.7rem 0;transition:all .25s;}
+.card:hover{border-color:rgba(0,229,255,.4);box-shadow:var(--glow);transform:translateY(-2px);}
+.cl{border-left:3px solid var(--c1);}
+.cr{border-left:3px solid var(--c2);}
+.cg{border-left:3px solid var(--c3);}
+.co{border-left:3px solid var(--gold);}
+
+.stitle{font-family:'Rajdhani',sans-serif;font-size:1.4rem;font-weight:700;
+  color:var(--c1);letter-spacing:1px;text-transform:uppercase;
+  border-bottom:1px solid var(--border);padding-bottom:.4rem;margin-bottom:.9rem;}
+
+.vbox{background:var(--card);border:2px solid var(--c1);border-radius:14px;
+  padding:1rem;box-shadow:var(--glow);}
+.vbox video {
+    max-width: 854px;
+    max-height: 480px;
+    width: 100%;
+    height: auto;
+    display: block;
+    margin-left: auto;
+    margin-right: auto;
+}
+.vbox-title{font-family:'Rajdhani',sans-serif;font-size:1.1rem;
+  color:var(--c1);font-weight:700;margin-bottom:.5rem;letter-spacing:.5px;}
+
+/* Padroniza TODOS os players de vídeo e imagens grandes */
+.stVideo video, .stVideo iframe {
+    max-width: 854px;
+    max-height: 480px;
+    width: auto !important;
+    height: auto !important;
+    display: block;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+/* Centraliza containers de vídeo */
+div[data-testid="stVideo"] {
+    display: flex;
+    justify-content: center;
+}
+
+/* Timeline */
+.timeline-container {
+    background: var(--card);
+    border-radius: 12px;
+    padding: 1rem;
+    margin: 1rem 0;
+    border: 1px solid var(--border);
+}
+.timeline-bar {
+    display: flex;
+    height: 40px;
+    background: #1e2a3a;
+    border-radius: 8px;
+    overflow: hidden;
+    margin: 0.5rem 0;
+}
+.timeline-segment {
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-weight: bold;
+    font-size: 0.8rem;
+    border-right: 1px solid var(--border);
+    cursor: pointer;
+    transition: filter 0.2s;
+}
+.timeline-segment:hover {
+    filter: brightness(1.2);
+}
+
+.stTabs [data-baseweb="tab-list"]{gap:5px;background:var(--card);
+  border-radius:12px;padding:.5rem;border:1px solid var(--border);}
+.stTabs [data-baseweb="tab"]{background:rgba(255,255,255,.04)!important;
+  border-radius:8px!important;border:1px solid rgba(255,255,255,.07)!important;
+  padding:.65rem 1.3rem!important;font-family:'Rajdhani',sans-serif!important;
+  font-weight:600!important;font-size:.9rem!important;
+  color:var(--dim)!important;transition:all .25s!important;}
+.stTabs [data-baseweb="tab"]:hover{background:rgba(0,229,255,.08)!important;
+  color:var(--c1)!important;}
+.stTabs [aria-selected="true"]{
+  background:linear-gradient(135deg,rgba(0,229,255,.22),rgba(0,229,255,.07))!important;
+  color:var(--c1)!important;border-color:var(--c1)!important;
+  box-shadow:0 0 14px rgba(0,229,255,.25)!important;}
+
+.stButton>button{font-family:'Rajdhani',sans-serif!important;
+  font-weight:700!important;letter-spacing:.4px!important;
+  border-radius:8px!important;transition:all .25s!important;}
+.stButton>button[kind="primary"]{
+  background:linear-gradient(135deg,var(--c1),#0090b8)!important;
+  color:#000!important;border:none!important;
+  box-shadow:0 4px 14px rgba(0,229,255,.35)!important;}
+.stButton>button[kind="primary"]:hover{
+  transform:translateY(-2px)!important;
+  box-shadow:0 8px 24px rgba(0,229,255,.5)!important;}
+.stButton>button[kind="secondary"]{
+  background:rgba(255,255,255,.06)!important;
+  color:var(--txt)!important;
+  border:1px solid var(--border)!important;}
+.stButton>button[kind="secondary"]:hover{
+  background:rgba(0,229,255,.12)!important;
+  border-color:var(--c1)!important;color:var(--c1)!important;}
+
+[data-testid="metric-container"]{background:var(--card);
+  border:1px solid var(--border);border-radius:10px;padding:.7rem;}
+.stProgress>div>div>div{
+  background:linear-gradient(90deg,var(--c1),var(--c3))!important;}
+[data-testid="stSidebar"]{background:#0a0f1a!important;
+  border-right:1px solid var(--border);}
+.stTextInput>div>div>input,.stTextArea>div>div>textarea{
+  background:var(--card)!important;border:1px solid var(--border)!important;
+  color:var(--txt)!important;border-radius:8px!important;
+  font-family:'JetBrains Mono',monospace!important;}
+::-webkit-scrollbar{width:5px;}
+::-webkit-scrollbar-track{background:var(--bg);}
+::-webkit-scrollbar-thumb{background:linear-gradient(var(--c1),var(--c2));
+  border-radius:10px;}
+[data-testid="stFileUploadDropzone"]{background:var(--card)!important;
+  border:1.5px dashed var(--border)!important;border-radius:10px!important;}
+[data-testid="stFileUploadDropzone"]:hover{border-color:var(--c1)!important;}
+.streamlit-expanderHeader{background:var(--card)!important;
+  border-radius:8px!important;
+  font-family:'Rajdhani',sans-serif!important;font-weight:600!important;}
 </style>
 """, unsafe_allow_html=True)
+# ==============================================================================
+# CONSTANTES E BANCOS DE DADOS
+# ==============================================================================
+PHI = 1.618
+MAX_PIX = 5000 * 5000
 
-# ==========================
-# INICIALIZAÇÃO DO ESTADO
-# ==========================
-def initialize_state():
-    """Inicializa todos os estados da sessão"""
-    if 'initialized' not in st.session_state:
-        st.session_state.initialized = True
-        
-        # Estados principais
-        defaults = {
-            # Projeto
-            'project_name': f'Projeto_{datetime.now().strftime("%Y%m%d_%H%M")}',
-            'project_id': str(uuid.uuid4()),
-            
-            # Arquivos
-            'uploaded_video': None,
-            'uploaded_audio': None,
-            'video_path': '',
-            'audio_path': '',
-            'working_dir': tempfile.mkdtemp(prefix='studio_pro_'),
-            
-            # Informações de mídia
-            'video_info': {},
-            'audio_info': {},
-            
-            # Partições
-            'video_parts': [],
-            'selected_part_index': 0,
-            'is_partitioned': False,
-            
-            # Transcrição e textos
-            'transcribed_text': '',
-            'text_segments': [],
-            'tts_text': '',
-            
-            # Configurações
-            'selected_voice': 'masculina_padrao',
-            'voice_settings': {'speed': 1.0, 'pitch': 1.0, 'volume': 1.0},
-            'audio_effects': [],
-            'video_effects': [],
-            
-            # IA e análise
-            'video_analysis': None,
-            'ai_prompts': {},
-            'selected_themes': [],
-            
-            # Processamento
-            'processing': {
-                'status': 'idle',
-                'progress': 0,
-                'message': '',
-                'current_task': '',
-                'total_tasks': 0
-            },
-            
-            # Dependências
-            'dependencies': check_and_install_dependencies(),
-            
-            # Interface
-            'current_tab': 'upload',
-            'show_help': True,
-            'auto_mode': True,
-            
-            # Exportação
-            'export_queue': [],
-            'export_preset': 'youtube_1080p',
-            
-            # Análise de vídeo
-            'video_analysis_complete': False,
-            'enhanced_prompts': {},
-            
-            # Narrativa (novo)
-            'narrative_template': None,
-            'narrative_acts': [],
-            'conversation_segments': [],
-        }
-        
-        # Inicializa todos os estados
-        for key, value in defaults.items():
-            if key not in st.session_state:
-                st.session_state[key] = value
+FILTER_DB: Dict[str, Dict] = {
+    "Vintage":       {"icon":"🟤","desc":"Sépia + vinheta + granulação",
+                      "params":{"intensidade":(0,100,70),"vinheta":(0,100,40),"granulacao":(0,50,10)}},
+    "Azulado":       {"icon":"🔵","desc":"Tom frio cinematográfico",
+                      "params":{"intensidade":(0,100,50),"brilho":(-20,20,0)}},
+    "Esverdeado":    {"icon":"🟢","desc":"Mood Matrix / natureza",
+                      "params":{"intensidade":(0,100,50),"contraste":(0.5,1.5,1.1)}},
+    "Futurístico":   {"icon":"👾","desc":"Glow neon cyberpunk",
+                      "params":{"glow":(0,100,30),"neon":(0,100,20),"scanlines":(0,50,0)}},
+    "Realça Cores":  {"icon":"🌈","desc":"Saturação vibrante",
+                      "params":{"intensidade":(0.5,3.0,1.5)}},
+    "P&B":           {"icon":"⚫","desc":"Monocromático profissional",
+                      "params":{"contraste":(0.5,2.0,1.2),"textura":(0,30,0)}},
+    "Infravermelho": {"icon":"📡","desc":"Fotografia IV falsa",
+                      "params":{"intensidade":(0,100,50)}},
+    "Glitch":        {"icon":"📺","desc":"Distorção digital",
+                      "params":{"intensidade":(1,20,5)}},
+    "Vaporwave":     {"icon":"🌌","desc":"Pastel retrô 80s",
+                      "params":{"intensidade":(0,100,80)}},
+    "HDR":           {"icon":"✨","desc":"Alto alcance dinâmico",
+                      "params":{"intensidade":(0,100,60)}},
+    "Cinemático":    {"icon":"🎞️","desc":"Color grade cinematográfico",
+                      "params":{"intensidade":(0,100,60),"contraste":(0.5,1.5,1.1)}},
+    "Quente":        {"icon":"🔶","desc":"Tom quente aconchegante",
+                      "params":{"intensidade":(0,100,60)}},
+    "Frio":          {"icon":"🔷","desc":"Tom frio invernal",
+                      "params":{"intensidade":(0,100,60)}},
+}
 
-# ==========================
-# FUNÇÕES DE PROCESSAMENTO DE VÍDEO (mantidas)
-# ==========================
-def get_media_info(file_path: str, media_type: str = 'video') -> Dict:
-    try:
-        if not os.path.exists(file_path):
-            return {}
-            
-        if media_type == 'video':
-            cmd = [
-                'ffprobe', '-v', 'quiet',
-                '-print_format', 'json',
-                '-show_format',
-                '-show_streams',
-                file_path
-            ]
-        else:  # audio
-            cmd = [
-                'ffprobe', '-v', 'quiet',
-                '-print_format', 'json',
-                '-show_format',
-                file_path
-            ]
-        
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            return {}
-        
-        info = json.loads(result.stdout)
-        
-        if media_type == 'video':
-            video_stream = next((s for s in info.get('streams', []) if s.get('codec_type') == 'video'), {})
-            audio_stream = next((s for s in info.get('streams', []) if s.get('codec_type') == 'audio'), {})
-            
-            duration = float(info.get('format', {}).get('duration', 0))
-            size = int(info.get('format', {}).get('size', 0))
-            
-            return {
-                'duration': duration,
-                'size_bytes': size,
-                'size_mb': size / (1024 * 1024),
-                'width': int(video_stream.get('width', 0)),
-                'height': int(video_stream.get('height', 0)),
-                'resolution': f"{video_stream.get('width', 0)}x{video_stream.get('height', 0)}",
-                'video_codec': video_stream.get('codec_name', 'unknown'),
-                'audio_codec': audio_stream.get('codec_name', 'unknown'),
-                'bitrate': info.get('format', {}).get('bit_rate', '0'),
-                'format': info.get('format', {}).get('format_name', 'unknown')
-            }
-        else:
-            duration = float(info.get('format', {}).get('duration', 0))
-            size = int(info.get('format', {}).get('size', 0))
-            
-            return {
-                'duration': duration,
-                'size_bytes': size,
-                'size_mb': size / (1024 * 1024),
-                'bitrate': info.get('format', {}).get('bit_rate', '0'),
-                'format': info.get('format', {}).get('format_name', 'unknown'),
-                'sample_rate': next((s.get('sample_rate', '0') for s in info.get('streams', []) if s.get('codec_type') == 'audio'), '0')
-            }
-    
-    except Exception as e:
-        st.error(f"Erro ao obter informações: {str(e)}")
-        return {}
+FRAME_DB: Dict[str, Dict] = {
+    "Nenhuma":     {"icon":"❌","desc":"Sem moldura"},
+    "Neon":        {"icon":"💡","desc":"Brilho neon pulsante",  "cor":"#FF00FF","min":3, "max":30},
+    "Janela":      {"icon":"🪟","desc":"Divisórias de janela",  "cor":"#FFFFFF","min":5, "max":50},
+    "Câmera":      {"icon":"📷","desc":"Polaroid / DSLR",       "cor":"#C0C0C0","min":10,"max":80},
+    "Smartphone":  {"icon":"📱","desc":"iPhone / Android",      "cor":"#000000","min":20,"max":120},
+    "Portal":      {"icon":"🌀","desc":"Portal sci-fi",          "cor":"#00FFFF","min":10,"max":150},
+    "Lupa":        {"icon":"🔍","desc":"Borda circular",         "cor":"#000000","min":15,"max":100},
+    "Cinemascope": {"icon":"🎬","desc":"Barras cinema 2.39:1",   "cor":"#000000","min":5, "max":20},
+    "Dupla":       {"icon":"🖼️","desc":"Borda dupla elegante",   "cor":"#DAA520","min":3, "max":15},
+    "Glitch":      {"icon":"⚡","desc":"Moldura glitch digital",  "cor":"#00FF00","min":5, "max":20},
+}
 
-def split_video_into_parts(video_path: str, part_duration: int = 60) -> List[VideoPart]:
-    try:
-        info = get_media_info(video_path, 'video')
-        if not info or info['duration'] == 0:
-            return []
-        
-        total_duration = info['duration']
-        num_parts = math.ceil(total_duration / part_duration)
-        parts = []
-        
-        st.session_state.processing['total_tasks'] = num_parts
-        st.session_state.processing['current_task'] = "Dividindo vídeo"
-        st.session_state.processing['status'] = 'processing'
-        
-        with st.spinner(f'Dividindo vídeo em {num_parts} partes...'):
-            progress_bar = st.progress(0)
-            
-            for i in range(num_parts):
-                start_time = i * part_duration
-                end_time = min((i + 1) * part_duration, total_duration)
-                duration = end_time - start_time
-                
-                part_output_path = os.path.join(st.session_state.working_dir, f"part_{i+1:03d}.mp4")
-                
-                cmd = [
-                    'ffmpeg', '-i', video_path,
-                    '-ss', str(start_time),
-                    '-to', str(end_time),
-                    '-c:v', 'libx264',
-                    '-c:a', 'aac',
-                    '-strict', 'experimental',
-                    part_output_path,
-                    '-y'
-                ]
-                
-                try:
-                    subprocess.run(cmd, capture_output=True, check=True)
-                    
-                    part = VideoPart(
-                        part_id=i + 1,
-                        input_path=video_path,
-                        output_path=part_output_path,
-                        start_time=start_time,
-                        end_time=end_time,
-                        duration=duration,
-                        size_mb=(duration / total_duration) * info['size_mb']
-                    )
-                    parts.append(part)
-                    
-                except subprocess.CalledProcessError as e:
-                    st.warning(f"Erro ao criar parte {i+1}: {e.stderr[:200]}")
-                    part = VideoPart(
-                        part_id=i + 1,
-                        input_path=video_path,
-                        output_path='',
-                        start_time=start_time,
-                        end_time=end_time,
-                        duration=duration,
-                        size_mb=0,
-                        status='error'
-                    )
-                    parts.append(part)
-                
-                progress = (i + 1) / num_parts
-                progress_bar.progress(progress)
-                st.session_state.processing['progress'] = progress * 100
-        
-        progress_bar.empty()
-        st.session_state.processing['status'] = 'completed'
-        st.session_state.processing['message'] = f'Vídeo dividido em {num_parts} partes'
-        
-        return parts
-    
-    except Exception as e:
-        st.error(f"Erro ao dividir vídeo: {str(e)}")
-        traceback.print_exc()
-        return []
+ANIMATION_DB: Dict[str, Dict] = {
+    "Girar":       {"icon":"🔄","desc":"Rotação 360° contínua"},
+    "Zoom":        {"icon":"🔍","desc":"Zoom in/out dinâmico"},
+    "Deslizar":    {"icon":"↔️","desc":"Transição lateral"},
+    "Piscar":      {"icon":"✨","desc":"Fade strobe"},
+    "Pixelar":     {"icon":"🧊","desc":"Pixelização criativa"},
+    "Glitch":      {"icon":"📺","desc":"Distorção digital"},
+    "Pulsar":      {"icon":"💫","desc":"Pulsação suave"},
+    "Balançar":    {"icon":"〰️","desc":"Oscilação horizontal"},
+}
 
-def extract_audio_from_video(video_path: str, output_path: str = None) -> str:
-    try:
-        if not os.path.exists(video_path):
-            st.error("Vídeo não encontrado")
-            return ""
-        
-        if output_path is None:
-            output_path = os.path.join(st.session_state.working_dir, "extracted_audio.mp3")
-        
-        cmd = [
-            'ffmpeg', '-i', video_path,
-            '-q:a', '0', '-map', 'a',
-            output_path, '-y'
-        ]
-        
-        process = subprocess.run(cmd, capture_output=True, text=True)
-        if process.returncode == 0:
-            return output_path
-        else:
-            st.error(f"Erro ao extrair áudio: {process.stderr[:200]}")
-            return ""
-    
-    except Exception as e:
-        st.error(f"Erro: {str(e)}")
-        traceback.print_exc()
-        return ""
+VOICE_PROFILES: Dict[str, Dict] = {
+    "masculina_padrao":  {"name":"Antônio (Neural)","code":"pt-BR-AntonioNeural",  "speed":1.0},
+    "feminina_suave":    {"name":"Francisca (Neural)","code":"pt-BR-FranciscaNeural","speed":0.9},
+    "masculina_jovem":   {"name":"Julio (Neural)",   "code":"pt-BR-JulioNeural",   "speed":1.1},
+    "feminina_calma":    {"name":"Manuela (Neural)",  "code":"pt-BR-ManuelaNeural", "speed":0.9},
+    "narrador":          {"name":"Fábio (Notícias)",  "code":"pt-BR-FabioNeural",   "speed":1.0},
+}
 
-def apply_video_effect(input_path: str, effect_name: str, output_path: str = None) -> str:
-    try:
-        if not os.path.exists(input_path):
-            return input_path
-            
-        if output_path is None:
-            output_path = os.path.join(st.session_state.working_dir, f"effected_{os.path.basename(input_path)}")
-        
-        effect = VIDEO_EFFECTS.get(effect_name, VIDEO_EFFECTS['normal'])
-        filter_complex = effect['filter']
-        
-        if filter_complex == 'null':
-            shutil.copy2(input_path, output_path)
-        else:
-            cmd = [
-                'ffmpeg', '-i', input_path,
-                '-vf', filter_complex,
-                '-c:a', 'copy',
-                output_path, '-y'
-            ]
-            
-            subprocess.run(cmd, capture_output=True, check=True)
-        
-        return output_path
-    
-    except Exception as e:
-        st.error(f"Erro ao aplicar efeito: {str(e)}")
-        traceback.print_exc()
-        return input_path
+PERFIS_MUSICAIS: Dict[str, Dict] = {
+    "MOTIVACIONAL":{"bpm":125,"emocao":"inspiração","cores":["#1E90FF","#FF8C00"]},
+    "FELIZ":       {"bpm":130,"emocao":"alegria",   "cores":["#FFD700","#FF6B35"]},
+    "TREINO":      {"bpm":150,"emocao":"força",     "cores":["#FF0000","#000000"]},
+    "FILOSOFIA":   {"bpm":80, "emocao":"reflexão",  "cores":["#000080","#87CEEB"]},
+    "FINANCEIRO":  {"bpm":120,"emocao":"confiança", "cores":["#006400","#D4AF37"]},
+    "RELIGIOSO":   {"bpm":90, "emocao":"devoção",   "cores":["#8B0000","#DAA520"]},
+}
 
-# ==========================
-# FUNÇÕES DE ÁUDIO E TEXTO (mantidas)
-# ==========================
-def transcribe_audio_with_whisper(audio_path: str) -> str:
-    try:
-        if not os.path.exists(audio_path):
-            return "❌ Arquivo de áudio não encontrado"
-        
-        try:
-            import whisper
-        except ImportError:
-            st.warning("Whisper não está disponível. Tentando instalar...")
-            try:
-                subprocess.check_call([sys.executable, "-m", "pip", "install", "openai-whisper", "--quiet"])
-                import whisper
-            except:
-                return "❌ Não foi possível instalar Whisper. Use: pip install openai-whisper"
-        
-        st.session_state.processing['status'] = 'processing'
-        st.session_state.processing['message'] = 'Transcrevendo áudio...'
-        
-        with st.spinner("Transcrevendo áudio com Whisper..."):
-            progress_bar = st.progress(0)
-            
-            try:
-                model = whisper.load_model("base")
-                progress_bar.progress(0.3)
-                
-                result = model.transcribe(audio_path, language='pt', fp16=False)
-                progress_bar.progress(1.0)
-                
-                st.session_state.processing['status'] = 'completed'
-                st.session_state.processing['message'] = 'Transcrição concluída!'
-                
-                return result['text']
-                
-            except Exception as e:
-                return f"❌ Erro na transcrição: {str(e)}"
-            finally:
-                progress_bar.empty()
-    
-    except Exception as e:
-        return f"❌ Erro: {str(e)}"
+THEME_KW = {
+    "educação":      ["aprender","ensinar","escola","curso","conhecimento","aula"],
+    "tecnologia":    ["software","app","código","digital","ia","algoritmo","sistema"],
+    "marketing":     ["venda","campanha","cliente","conversão","roi","funil"],
+    "motivacional":  ["superar","conquista","força","vitória","inspirar","sucesso"],
+    "negócios":      ["empresa","negócio","lucro","investimento","mercado","startup"],
+    "saúde":         ["médico","exercício","nutrição","bem-estar","fitness","treino"],
+    "entretenimento":["filme","música","jogo","show","diversão","conteúdo"],
+}
 
-def text_to_speech_edge(text: str, voice_profile: VoiceProfile, output_path: str = None) -> Tuple[bool, str]:
-    try:
-        if output_path is None:
-            output_path = os.path.join(st.session_state.working_dir, f"tts_{uuid.uuid4().hex[:8]}.mp3")
-        
-        text = re.sub(r'\s+', ' ', text.strip())
-        if not text:
-            return False, "Texto vazio"
-        
-        if len(text) > 5000:
-            text = text[:5000] + "..."
-        
-        try:
-            import edge_tts
-            import asyncio
-            
-            original_voice = voice_profile.voice_code
-            voice = original_voice
-            
-            if original_voice in VOICE_FALLBACK_MAPPING:
-                voice_to_try = [original_voice, VOICE_FALLBACK_MAPPING[original_voice]]
-            else:
-                voice_to_try = [original_voice]
-            
-            speed = float(voice_profile.speed)
-            rate_percent = int((speed - 1.0) * 100)
-            rate_percent = max(-50, min(100, rate_percent))
-            
-            rate_str = f"+{rate_percent}%" if rate_percent >= 0 else f"{rate_percent}%"
-            
-            success = False
-            last_error = None
-            
-            for current_voice in voice_to_try:
-                try:
-                    communicate = edge_tts.Communicate(
-                        text=text,
-                        voice=current_voice,
-                        rate=rate_str
-                    )
-                    
-                    try:
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                        loop.run_until_complete(communicate.save(output_path))
-                        loop.close()
-                    except RuntimeError:
-                        import nest_asyncio
-                        nest_asyncio.apply()
-                        asyncio.run(communicate.save(output_path))
-                    
-                    success = True
-                    
-                    if current_voice != original_voice:
-                        st.info(f"Voz '{voice_profile.name}' não disponível. Usando voz alternativa.")
-                    
-                    break
-                    
-                except Exception as voice_error:
-                    last_error = voice_error
-                    continue
-            
-            if not success:
-                return False, f"Todas as vozes falharam: {str(last_error)}"
-            
-            temp_path = output_path
-            
-            if voice_profile.volume != 1.0:
-                adjusted_path = output_path.replace('.mp3', '_vol.mp3')
-                if adjust_audio_volume(temp_path, adjusted_path, voice_profile.volume):
-                    temp_path = adjusted_path
-            
-            if voice_profile.pitch != 1.0:
-                final_path = output_path.replace('.mp3', '_final.mp3')
-                if adjust_audio_pitch(temp_path, final_path, voice_profile.pitch):
-                    output_path = final_path
-                elif temp_path != output_path:
-                    shutil.copy2(temp_path, output_path)
-            elif temp_path != output_path:
-                shutil.copy2(temp_path, output_path)
-            
-            if os.path.exists(temp_path) and temp_path != output_path:
-                try:
-                    os.remove(temp_path)
-                except:
-                    pass
-            
-            return True, output_path
-            
-        except ImportError:
-            try:
-                from gtts import gTTS
-                
-                st.info("Usando gTTS como fallback...")
-                
-                slow = speed < 0.8
-                tts = gTTS(text=text, lang='pt', slow=slow)
-                tts.save(output_path)
-                
-                if voice_profile.volume != 1.0:
-                    adjust_audio_volume(output_path, output_path, voice_profile.volume)
-                
-                return True, output_path
-                
-            except ImportError:
-                return False, "Instale edge-tts: pip install edge-tts"
-            
-        except Exception as e:
-            error_msg = str(e)
-            if "rate" in error_msg.lower():
-                try:
-                    import edge_tts
-                    import asyncio
-                    
-                    communicate = edge_tts.Communicate(
-                        text=text,
-                        voice=voice_profile.voice_code
-                    )
-                    
-                    asyncio.run(communicate.save(output_path))
-                    return True, output_path
-                except:
-                    return False, f"Erro ajustado: {error_msg[:100]}"
-            return False, f"Erro no TTS: {error_msg[:100]}"
-    
-    except Exception as e:
-        return False, f"Erro geral: {str(e)}"
-
-def adjust_audio_pitch(input_path: str, output_path: str, pitch: float) -> bool:
-    try:
-        if pitch == 1.0:
-            if input_path != output_path:
-                shutil.copy2(input_path, output_path)
-            return True
-        
-        if not os.path.exists(input_path):
-            return False
-        
-        atempo = 1.0 / pitch
-        
-        cmd = [
-            'ffmpeg', '-i', input_path,
-            '-filter:a', f'atempo={atempo:.2f},asetrate=44100*{pitch:.2f},aresample=44100',
-            output_path, '-y'
-        ]
-        
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        return result.returncode == 0
-    
-    except Exception as e:
-        st.error(f"Erro ao ajustar pitch: {str(e)}")
-        return False
-
-def test_all_voices():
-    test_text = "Olá, este é um teste de voz."
-    working_voices = []
-    non_working_voices = []
-    
-    st.info("Testando todas as vozes...")
-    
-    for voice_id, voice_profile in DEFAULT_VOICE_PROFILES.items():
-        try:
-            success, result = text_to_speech_edge(test_text, voice_profile)
-            if success:
-                working_voices.append(voice_profile.name)
-                st.success(f"✅ {voice_profile.name} - FUNCIONA")
-            else:
-                non_working_voices.append(voice_profile.name)
-                st.warning(f"❌ {voice_profile.name} - NÃO FUNCIONA: {result[:50]}")
-        except Exception as e:
-            non_working_voices.append(voice_profile.name)
-            st.warning(f"❌ {voice_profile.name} - ERRO: {str(e)[:50]}")
-    
-    return working_voices, non_working_voices
-
-def adjust_audio_volume(input_path: str, output_path: str, volume: float) -> bool:
-    try:
-        if volume == 1.0:
-            if input_path != output_path:
-                shutil.copy2(input_path, output_path)
-            return True
-        
-        if not os.path.exists(input_path):
-            return False
-        
-        if volume > 0:
-            db = 20 * math.log10(volume)
-        else:
-            db = -96
-        
-        cmd = [
-            'ffmpeg', '-i', input_path,
-            '-filter:a', f'volume={db}dB',
-            output_path, '-y'
-        ]
-        
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        return result.returncode == 0
-    
-    except Exception as e:
-        st.error(f"Erro ao ajustar volume: {str(e)}")
-        return False
-
-def segment_text_by_time(text: str, audio_duration: float, num_segments: int = 10) -> List[Dict]:
-    words = text.split()
-    total_words = len(words)
-    
-    if total_words == 0:
-        return []
-    
-    segments = []
-    words_per_segment = max(1, total_words // num_segments)
-    
-    for i in range(num_segments):
-        start_idx = i * words_per_segment
-        end_idx = min((i + 1) * words_per_segment, total_words)
-        
-        if start_idx >= total_words:
-            break
-        
-        segment_text = ' '.join(words[start_idx:end_idx])
-        time_per_segment = audio_duration / num_segments
-        
-        segments.append({
-            'id': i + 1,
-            'start_time': i * time_per_segment,
-            'end_time': (i + 1) * time_per_segment,
-            'duration': time_per_segment,
-            'text': segment_text,
-            'word_count': end_idx - start_idx
-        })
-    
-    return segments
-
-# ==========================
-# FUNÇÕES DE IA E ANÁLISE DE VÍDEO (mantidas)
-# ==========================
-def analyze_text_for_themes(text: str) -> Dict:
-    themes_keywords = {
-        'educação': ['aprender', 'ensinar', 'escola', 'universidade', 'estudar', 'professor', 'aluno', 'curso', 'aula', 'conhecimento'],
-        'tecnologia': ['computador', 'software', 'hardware', 'programação', 'aplicativo', 'internet', 'digital', 'inovação', 'startup', 'robótica'],
-        'saúde': ['médico', 'hospital', 'doença', 'tratamento', 'saúde', 'exercício', 'bem-estar', 'nutrição', 'fitness', 'medicina'],
-        'negócios': ['empresa', 'negócio', 'lucro', 'venda', 'mercado', 'investimento', 'empreendedor', 'gestão', 'finanças', 'estratégia'],
-        'entretenimento': ['filme', 'música', 'jogo', 'diversão', 'show', 'arte', 'cinema', 'série', 'teatro', 'festival'],
-        'esportes': ['futebol', 'jogar', 'competição', 'atleta', 'campeonato', 'treino', 'time', 'vitória', 'derrota', 'olímpico']
-    }
-    
-    text_lower = text.lower()
-    theme_scores = {}
-    
-    for theme, keywords in themes_keywords.items():
-        score = sum(1 for keyword in keywords if keyword in text_lower)
-        if score > 0:
-            theme_scores[theme] = {
-                'score': score,
-                'confidence': min(100, score * 10),
-                'keywords_found': [k for k in keywords if k in text_lower]
-            }
-    
-    sorted_themes = sorted(theme_scores.items(), key=lambda x: x[1]['score'], reverse=True)
-    
-    return {
-        'primary_theme': sorted_themes[0][0] if sorted_themes else 'geral',
-        'all_themes': dict(sorted_themes[:5]),
-        'word_count': len(text.split()),
-        'sentence_count': len(re.split(r'[.!?]+', text)),
-        'reading_time_minutes': round(len(text.split()) / 150, 1)
-    }
-
-def analyze_video_content(video_path: str, transcribed_text: str) -> VideoAnalysis:
-    text_analysis = analyze_text_for_themes(transcribed_text)
-    
-    sentences = re.split(r'[.!?]+', transcribed_text)
-    key_moments = []
-    
-    for i, sentence in enumerate(sentences[:10]):
-        if len(sentence.strip()) > 20:
-            key_moments.append({
-                'time': (i * 10),
-                'text': sentence.strip()[:100] + "..." if len(sentence) > 100 else sentence.strip(),
-                'importance': min(100, len(sentence) * 2)
-            })
-    
-    suggestions = []
-    
-    if text_analysis['word_count'] < 100:
-        suggestions.append("📝 **Adicione mais conteúdo:** O vídeo é muito curto. Considere expandir a explicação.")
-    
-    if text_analysis['sentence_count'] < 5:
-        suggestions.append("🔤 **Divida o conteúdo:** Use frases mais curtas para melhor compreensão.")
-    
-    if text_analysis['primary_theme'] == 'educação':
-        suggestions.append("🎓 **Inclua exemplos práticos:** Adicione casos reais para ilustrar o conteúdo.")
-    
-    if text_analysis['primary_theme'] == 'marketing':
-        suggestions.append("📢 **Adicione call-to-action:** Inclua uma chamada clara para ação.")
-    
-    if text_analysis['primary_theme'] == 'tecnologia':
-        suggestions.append("💻 **Adicione demonstrações:** Mostre o funcionamento na prática.")
-    
-    ai_prompts = generate_video_improvement_prompts(
-        text_analysis['primary_theme'],
-        transcribed_text[:500]
-    )
-    
-    target_audience = identify_target_audience(transcribed_text)
-    optimized_keywords = extract_optimized_keywords(transcribed_text)
-    sentiment_scores = analyze_sentiment_enhanced(transcribed_text)
-    narrative_structure = analyze_narrative_structure(transcribed_text)
-    
-    theme_scores = {}
-    for theme in [text_analysis['primary_theme']] + list(text_analysis['all_themes'].keys())[:2]:
-        theme_scores[theme] = calculate_theme_score(theme, transcribed_text)
-    
-    estimated_engagement = calculate_engagement_score(transcribed_text)
-    
-    analysis = VideoAnalysis(
-        themes=[text_analysis['primary_theme']] + list(text_analysis['all_themes'].keys())[:2],
-        key_moments=key_moments[:5],
-        improvement_suggestions=suggestions[:5],
-        ai_prompts=ai_prompts,
-        transcript_summary=transcribed_text[:300] + "..." if len(transcribed_text) > 300 else transcribed_text,
-        mood="informative" if text_analysis['primary_theme'] in ['educação', 'tecnologia'] else "entertaining",
-        target_audience=target_audience,
-        optimized_keywords=optimized_keywords,
-        sentiment_scores=sentiment_scores,
-        estimated_engagement=estimated_engagement,
-        narrative_structure=narrative_structure,
-        theme_scores=theme_scores
-    )
-    
-    return analysis
-
-def generate_video_improvement_prompts(theme: str, content: str) -> Dict[str, str]:
-    words = content.lower().split()
-    keywords = [w for w in words if len(w) > 4][:5]
-    main_topic = ' '.join(keywords[:3]) if keywords else "conteúdo principal"
-    
-    prompt_templates = {
-        'imagem': {
-            'educação': f"Ilustração educativa sobre {main_topic} com cores vibrantes e elementos gráficos explicativos",
-            'marketing': f"Imagem impactante para campanha sobre {main_topic} com design moderno e call-to-action visível",
-            'tecnologia': f"Visual futurista sobre {main_topic} com elementos tech, linhas limpas e cores neons",
-            'entretenimento': f"Cena divertida sobre {main_topic} com personagens expressivos e cores vivas",
-            'default': f"Imagem sobre {main_topic} com composição equilibrada e cores harmoniosas"
+# ==============================================================================
+# INICIALIZAÇÃO DO ESTADO DA SESSÃO
+# ==============================================================================
+def init_session_state():
+    defaults = {
+        "base_image": None,
+        "video_clip": None,
+        "video_path": None,
+        "video_frame": None,
+        "processed_image": None,
+        "screenshot_data": None,
+        "uploaded_file_id": None,
+        "project_name": f"Projeto_{datetime.now().strftime('%Y%m%d_%H%M')}",
+        "working_dir": tempfile.mkdtemp(prefix="studio_pro_"),
+        "transcribed_text": "",
+        "video_analysis": None,
+        "video_analysis_complete": False,
+        "enhanced_prompts": {},
+        "tts_text": "",
+        "_gif_data": None,
+        "_preview_video": None,
+        "_export_video": None,
+        "_current_frame_sec": 0.0,
+        "config": {
+            "moldura": {"tipo": "Nenhuma"},
+            "filtros": {},
+            "animacao": {},
+            "texto": "",
+            "fonte": {"tamanho": 36, "cor": "#FFFFFF", "tipo": "Padrão"},
+            "posicao": {"horizontal": "Centro", "vertical": "Base"},
+            "contorno": {"ativo": False, "cor": "#000000", "espessura": 2},
         },
-        'audio': {
-            'educação': f"Narração clara e didática sobre {main_topic} com tom amigável e ritmo moderado",
-            'marketing': f"Narração persuasiva sobre {main_topic} com tom confiante e música de fundo motivacional",
-            'tecnologia': f"Narração tecnológica sobre {main_topic} com efeitos sonoros futuristas e tom profissional",
-            'entretenimento': f"Narração animada sobre {main_topic} com música alegre e efeitos sonoros divertidos",
-            'default': f"Narração clara sobre {main_topic} com tom adequado ao conteúdo"
-        },
-        'video': {
-            'educação': f"Vídeo educativo sobre {main_topic} com animações explicativas, gráficos e exemplos visuais",
-            'marketing': f"Vídeo promocional sobre {main_topic} com transições dinâmicas, depoimentos e call-to-action claro",
-            'tecnologia': f"Vídeo tecnológico sobre {main_topic} com animações 3D, telas de código e visualizações de dados",
-            'entretenimento': f"Vídeo de entretenimento sobre {main_topic} com ritmo rápido, humor e efeitos visuais",
-            'default': f"Vídeo sobre {main_topic} com boa iluminação, enquadramento adequado e edição profissional"
-        },
-        'storyboard': {
-            'educação': f"Storyboard educativo: 1. Introdução ao tema, 2. Explicação teórica, 3. Exemplo prático, 4. Resumo e conclusão",
-            'marketing': f"Storyboard comercial: 1. Problema apresentado, 2. Solução oferecida, 3. Benefícios, 4. Call-to-action",
-            'tecnologia': f"Storyboard tecnológico: 1. Apresentação da tecnologia, 2. Funcionamento, 3. Casos de uso, 4. Conclusão",
-            'entretenimento': f"Storyboard divertido: 1. Situação cômica, 2. Desenvolvimento, 3. Clímax engraçado, 4. Resolução",
-            'default': f"Storyboard: 1. Introdução, 2. Desenvolvimento, 3. Conclusão"
-        }
+        "audio_path": None,
+        "audio_info": {},
+        "video_parts": [],
+        "is_partitioned": False,
+        "conversation_segments": [],
+        "narrative_template": None,
+        "narrative_acts": [],
+        "effect_segments": [],
+        "tutorial_step": 0,  # para guia interativo
     }
-    
-    selected_theme = theme if theme in ['educação', 'marketing', 'tecnologia', 'entretenimento'] else 'default'
-    
-    prompts = {}
-    for prompt_type in ['imagem', 'audio', 'video', 'storyboard']:
-        if prompt_type in prompt_templates and selected_theme in prompt_templates[prompt_type]:
-            prompts[prompt_type] = prompt_templates[prompt_type][selected_theme]
-        else:
-            prompts[prompt_type] = prompt_templates[prompt_type]['default']
-    
-    return prompts
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
 
-def generate_ai_prompts_for_enhancement(analysis: VideoAnalysis, enhancement_type: str) -> Dict[str, str]:
-    prompts = {}
-    
-    if enhancement_type in ['all', 'visual']:
-        prompts['visual_enhancement'] = f"""
-        Melhore visualmente um vídeo sobre {analysis.themes[0]} com:
-        1. Transições suaves entre cenas
-        2. Gráficos explicativos para pontos-chave
-        3. Legendas claras e legíveis
-        4. Cores que combinem com o tema {analysis.themes[0]}
-        5. Animações sutis para manter o engajamento
-        """
-    
-    if enhancement_type in ['all', 'audio']:
-        prompts['audio_enhancement'] = f"""
-        Aprimore o áudio para um vídeo sobre {analysis.themes[0]}:
-        1. Qualidade de voz clara e sem ruídos
-        2. Música de fundo adequada ao tema
-        3. Efeitos sonoros nos momentos certos
-        4. Volume balanceado entre voz e música
-        5. Silêncios estratégicos para ênfase
-        """
-    
-    if enhancement_type in ['all', 'content']:
-        prompts['content_enhancement'] = f"""
-        Melhore o conteúdo de um vídeo sobre {analysis.themes[0]}:
-        1. Estrutura clara: introdução, desenvolvimento, conclusão
-        2. Exemplos práticos e relevantes
-        3. Chamadas para ação quando apropriado
-        4. Resumo dos pontos principais
-        5. Conclusão memorável
-        """
-    
-    return prompts
+init_session_state()
 
-# ==========================
-# FUNÇÕES PARA IA APRIMORADA (mantidas)
-# ==========================
-def analyze_sentiment_enhanced(text: str) -> Dict[str, float]:
-    positive_words = ['excelente', 'ótimo', 'incrível', 'fantástico', 'maravilhoso', 'recomendo', 'amo', 'adoro',
-                     'perfeito', 'excelência', 'surpreendente', 'notável', 'brilhante', 'espetacular']
-    
-    negative_words = ['ruim', 'péssimo', 'horrível', 'terrível', 'desastroso', 'evite', 'odeio', 'detesto',
-                     'fracasso', 'decepcionante', 'lamentável', 'insatisfatório', 'problema', 'dificuldade']
-    
-    text_lower = text.lower()
-    words = text_lower.split()
-    
-    positive_count = sum(1 for word in words if word in positive_words)
-    negative_count = sum(1 for word in words if word in negative_words)
-    
-    total_sentiment_words = positive_count + negative_count
-    
-    if total_sentiment_words > 0:
-        positive_score = (positive_count / total_sentiment_words) * 100
-        negative_score = (negative_count / total_sentiment_words) * 100
+# ==============================================================================
+# FUNÇÕES UTILITÁRIAS DE IMAGEM
+# ==============================================================================
+def resize_safe(img: Image.Image) -> Image.Image:
+    if img.width * img.height > MAX_PIX:
+        scale = (MAX_PIX / (img.width * img.height)) ** 0.5
+        return img.resize((int(img.width*scale), int(img.height*scale)), Image.LANCZOS)
+    return img
+
+def img_to_bytes(img: Image.Image, fmt="PNG", quality=93) -> bytes:
+    buf = io.BytesIO()
+    if fmt == "JPEG":
+        img.convert("RGB").save(buf, format=fmt, quality=quality)
     else:
-        positive_score = 50
-        negative_score = 20
-    
-    neutral_score = 100 - positive_score - negative_score
-    
-    return {
-        'positive': round(positive_score),
-        'negative': round(negative_score),
-        'neutral': round(max(0, neutral_score))
-    }
+        img.save(buf, format=fmt)
+    return buf.getvalue()
 
-def identify_target_audience(text: str) -> Dict[str, Any]:
-    text_lower = text.lower()
-    
-    age_range = '25-44'
-    if any(word in text_lower for word in ['adolescente', 'jovem', 'escola', 'faculdade', 'universidade']):
-        age_range = '18-24'
-    elif any(word in text_lower for word in ['sênior', 'idoso', 'aposentadoria', 'terceira idade']):
-        age_range = '45-64'
-    
-    interests = []
-    interest_keywords = {
-        'tecnologia': ['tecnologia', 'software', 'app', 'digital', 'programação'],
-        'educação': ['aprender', 'curso', 'estudo', 'conhecimento', 'educação'],
-        'negócios': ['empresa', 'negócio', 'empreendedor', 'investimento', 'lucro'],
-        'saúde': ['saúde', 'exercício', 'fitness', 'bem-estar', 'nutrição'],
-        'entretenimento': ['filme', 'música', 'jogo', 'série', 'streaming']
-    }
-    
-    for interest, keywords in interest_keywords.items():
-        if any(keyword in text_lower for keyword in keywords):
-            interests.append(interest)
-    
-    if not interests:
-        interests = ['educação', 'tecnologia']
-    
-    complex_words = ['algoritmo', 'framework', 'paradigma', 'metodologia', 'estratégia', 'otimização']
-    knowledge_level = 'Avançado' if any(word in text_lower for word in complex_words) else 'Iniciante/Intermediário'
-    
-    return {
-        'age_range': age_range,
-        'interests': interests[:3],
-        'knowledge_level': knowledge_level,
-        'estimated_size': 'Médio'
-    }
-
-def extract_optimized_keywords(text: str, max_keywords: int = 10) -> List[str]:
-    text_clean = re.sub(r'[^\w\s]', ' ', text.lower())
-    words = text_clean.split()
-    
-    stopwords = [
-        'a', 'o', 'e', 'de', 'do', 'da', 'em', 'um', 'uma', 'para', 'com', 'não', 'uma',
-        'os', 'as', 'se', 'por', 'mais', 'mas', 'como', 'que', 'eu', 'ele', 'ela', 'nos',
-        'vos', 'eles', 'elas', 'meu', 'minha', 'teu', 'tua', 'seu', 'sua', 'isso', 'isto',
-        'aquele', 'aquela', 'está', 'estão', 'foi', 'foram', 'ser', 'era', 'eram', 'são',
-        'tem', 'têm', 'ter', 'terá', 'terão', 'haver', 'houve', 'também', 'muito', 'pouco',
-        'muita', 'pouca', 'muitos', 'poucos', 'algum', 'alguma', 'alguns', 'algumas',
-        'todo', 'toda', 'todos', 'todas', 'qual', 'quais', 'quando', 'onde', 'quem',
-        'como', 'porque', 'porquê', 'então', 'assim', 'logo', 'portanto', 'contudo',
-        'todavia', 'entretanto', 'enquanto', 'após', 'antes', 'durante', 'desde', 'até'
-    ]
-    
-    filtered_words = [w for w in words if w not in stopwords and len(w) >= 3]
-    
-    word_freq = {}
-    for word in filtered_words:
-        word_freq[word] = word_freq.get(word, 0) + 1
-    
-    sorted_words = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)
-    
-    keywords = [word for word, freq in sorted_words[:max_keywords]]
-    
-    if len(keywords) < 5:
-        bigrams = []
-        for i in range(len(words) - 1):
-            if len(words[i]) >= 3 and len(words[i+1]) >= 3:
-                bigram = f"{words[i]} {words[i+1]}"
-                bigrams.append(bigram)
-        
-        bigram_freq = {}
-        for bigram in bigrams:
-            bigram_freq[bigram] = bigram_freq.get(bigram, 0) + 1
-        
-        sorted_bigrams = sorted(bigram_freq.items(), key=lambda x: x[1], reverse=True)
-        for bigram, freq in sorted_bigrams[:3]:
-            keywords.append(bigram)
-    
-    return keywords[:max_keywords]
-
-def calculate_engagement_score(text: str) -> int:
-    score = 50
-    
-    word_count = len(text.split())
-    sentences = re.split(r'[.!?]+', text)
-    sentence_count = len([s for s in sentences if len(s.strip()) > 3])
-    
-    if 200 <= word_count <= 800:
-        score += 10
-    elif word_count < 100:
-        score -= 10
-    elif word_count > 1500:
-        score -= 5
-    
-    if sentence_count > 0:
-        avg_words_per_sentence = word_count / sentence_count
-        if 12 <= avg_words_per_sentence <= 20:
-            score += 8
-    
-    question_count = text.count('?')
-    if question_count >= 1:
-        score += min(15, question_count * 3)
-    
-    exclamation_count = text.count('!')
-    if 1 <= exclamation_count <= 3:
-        score += 5
-    
-    engagement_words = ['importante', 'atenção', 'incrível', 'fantástico', 'surpreendente',
-                       'você', 'seu', 'vamos', 'juntos', 'agora', 'hoje', 'descubra',
-                       'aprenda', 'veja', 'experimente', 'compartilhe', 'comente']
-    
-    engagement_word_count = sum(1 for word in engagement_words if word in text.lower())
-    score += min(12, engagement_word_count * 2)
-    
-    cta_keywords = ['clique', 'inscreva', 'compartilhe', 'comente', 'acesse', 'baixe']
-    has_cta = any(keyword in text.lower() for keyword in cta_keywords)
-    if has_cta:
-        score += 8
-    
-    words = text.lower().split()
-    unique_words = set(words)
-    if len(words) > 0:
-        lexical_diversity = len(unique_words) / len(words)
-        if lexical_diversity > 0.4:
-            score += 7
-    
-    has_numbers = bool(re.search(r'\d+', text))
-    if has_numbers:
-        score += 5
-    
-    story_words = ['história', 'experiência', 'caso', 'exemplo', 'aconteceu', 'momento']
-    has_story_elements = any(word in text.lower() for word in story_words)
-    if has_story_elements:
-        score += 6
-    
-    return max(0, min(100, score))
-
-def analyze_narrative_structure(text: str) -> Dict[str, Any]:
-    sentences = re.split(r'[.!?]+', text)
-    sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
-    
-    if not sentences:
-        return {
-            'structure_type': 'linear',
-            'sentence_count': 0,
-            'avg_sentence_length': 0,
-            'has_introduction': False,
-            'has_conclusion': False,
-            'transitions_count': 0,
-            'clarity_score': 0
-        }
-    
-    sentence_lengths = [len(s.split()) for s in sentences]
-    avg_sentence_length = sum(sentence_lengths) / len(sentence_lengths) if sentence_lengths else 0
-    
-    has_introduction = False
-    has_conclusion = False
-    transitions_count = 0
-    
-    intro_keywords = ['primeiro', 'inicialmente', 'começo', 'introdução', 'vamos falar sobre', 'hoje vamos']
-    concl_keywords = ['finalmente', 'concluindo', 'resumindo', 'em resumo', 'para finalizar', 'em conclusão']
-    transition_words = ['além disso', 'por outro lado', 'entretanto', 'no entanto', 'adicionalmente', 
-                       'em seguida', 'posteriormente', 'também', 'assim', 'portanto']
-    
-    text_lower = text.lower()
-    
-    for i in range(min(2, len(sentences))):
-        if any(keyword in sentences[i].lower() for keyword in intro_keywords):
-            has_introduction = True
-            break
-    
-    for i in range(max(0, len(sentences)-2), len(sentences)):
-        if any(keyword in sentences[i].lower() for keyword in concl_keywords):
-            has_conclusion = True
-            break
-    
-    for word in transition_words:
-        if word in text_lower:
-            transitions_count += text_lower.count(word)
-    
-    if has_introduction and has_conclusion and transitions_count >= 3:
-        structure_type = 'estruturada'
-    elif has_introduction or has_conclusion:
-        structure_type = 'parcialmente_estruturada'
-    else:
-        structure_type = 'linear'
-    
-    clarity_score = 50
-    
-    if avg_sentence_length > 0:
-        long_sentences = sum(1 for length in sentence_lengths if length > 25)
-        if long_sentences > 0:
-            clarity_score -= min(20, long_sentences * 5)
-        
-        short_sentences = sum(1 for length in sentence_lengths if length < 5)
-        if short_sentences > 0:
-            clarity_score -= min(15, short_sentences * 3)
-    
-    if has_introduction:
-        clarity_score += 10
-    if has_conclusion:
-        clarity_score += 10
-    if transitions_count >= 2:
-        clarity_score += min(15, transitions_count * 3)
-    
-    clarity_score = max(0, min(100, clarity_score))
-    
-    return {
-        'structure_type': structure_type,
-        'sentence_count': len(sentences),
-        'avg_sentence_length': round(avg_sentence_length, 1),
-        'has_introduction': has_introduction,
-        'has_conclusion': has_conclusion,
-        'transitions_count': transitions_count,
-        'clarity_score': clarity_score,
-        'sentence_length_distribution': {
-            'short': sum(1 for l in sentence_lengths if l < 10),
-            'medium': sum(1 for l in sentence_lengths if 10 <= l <= 20),
-            'long': sum(1 for l in sentence_lengths if l > 20)
-        }
-    }
-
-def create_video_from_text(audio_path: str, output_path: str, duration: float,
-                          bg_type: str = "cor sólida", bg_color: str = "#000000",
-                          bg_file: str = None, resolution: str = "1280x720",
-                          fps: int = 30) -> bool:
-    try:
-        width, height = map(int, resolution.split('x'))
-        
-        if bg_type == "cor sólida":
-            color_hex = bg_color.lstrip('#')
-            vf = f"color=c=0x{color_hex}:s={width}x{height}:d={duration},format=yuv420p"
-            input_video = None
-        elif bg_type == "imagem":
-            if not bg_file or not os.path.exists(bg_file):
-                return False
-            vf = f"loop=loop=-1:size=1,format=yuv420p,scale={width}:{height}:force_original_aspect_ratio=1,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
-            input_video = bg_file
-        else:  # vídeo
-            if not bg_file or not os.path.exists(bg_file):
-                return False
-            vf = f"scale={width}:{height}:force_original_aspect_ratio=1,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,loop=0,setpts=N/FRAME_RATE/TB"
-            input_video = bg_file
-        
-        cmd = ['ffmpeg']
-        if input_video:
-            cmd += ['-stream_loop', '-1', '-i', input_video]
-        else:
-            cmd += ['-f', 'lavfi', '-i', vf]
-            vf = None
-        
-        cmd += ['-i', audio_path]
-        
-        filter_complex = []
-        if vf:
-            filter_complex = [f"[0:v]{vf}[v]"]
-        else:
-            filter_complex = ["[0:v]null[v]"]
-        
-        cmd += ['-filter_complex', ';'.join(filter_complex)]
-        cmd += ['-map', '[v]', '-map', '1:a']
-        cmd += ['-c:v', 'libx264', '-preset', 'medium', '-crf', '23']
-        cmd += ['-c:a', 'aac', '-b:a', '192k']
-        cmd += ['-t', str(duration)]
-        cmd += ['-shortest', '-y', output_path]
-        
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        return result.returncode == 0
-    except Exception as e:
-        st.error(f"Erro na criação do vídeo: {str(e)}")
-        return False
-
-def calculate_theme_score(theme: str, text: str) -> int:
-    theme_keywords = {
-        'educação': ['aprender', 'ensinar', 'escola', 'universidade', 'estudar', 'professor', 
-                    'aluno', 'curso', 'aula', 'conhecimento', 'educação', 'estudo', 'aprendizado',
-                    'didático', 'pedagógico', 'ensino', 'acadêmico'],
-        'tecnologia': ['computador', 'software', 'hardware', 'programação', 'aplicativo', 
-                      'internet', 'digital', 'inovação', 'startup', 'robótica', 'tecnologia',
-                      'dados', 'inteligência artificial', 'IA', 'machine learning', 'código',
-                      'algoritmo', 'desenvolvimento', 'sistema', 'plataforma'],
-        'marketing': ['venda', 'mercado', 'consumidor', 'publicidade', 'propaganda', 'branding',
-                     'segmento', 'target', 'audiência', 'conversão', 'ROI', 'lead', 'cliente',
-                     'campanha', 'estratégia', 'promoção', 'oferta', 'negócio', 'lucro'],
-        'entretenimento': ['filme', 'música', 'jogo', 'diversão', 'show', 'arte', 'cinema',
-                          'série', 'teatro', 'festival', 'entretenimento', 'animação', 'vídeo',
-                          'streaming', 'youtube', 'netflix', 'hobby', 'passatempo'],
-        'saúde': ['médico', 'hospital', 'doença', 'tratamento', 'saúde', 'exercício', 
-                 'bem-estar', 'nutrição', 'fitness', 'medicina', 'corpo', 'alimentação',
-                 'dieta', 'exercício', 'treino', 'prevenção', 'cuidados'],
-        'negócios': ['empresa', 'negócio', 'lucro', 'venda', 'mercado', 'investimento', 
-                    'empreendedor', 'gestão', 'finanças', 'estratégia', 'gestão', 'liderança',
-                    'equipe', 'produtividade', 'eficiência', 'resultados', 'performance']
-    }
-    
-    text_lower = text.lower()
-    keywords = theme_keywords.get(theme.lower(), [])
-    
-    if not keywords:
-        return 0
-    
-    matches = 0
-    total_keywords = len(keywords)
-    
-    for keyword in keywords:
-        if keyword in text_lower:
-            matches += 1
-    
-    if total_keywords > 0:
-        base_score = (matches / total_keywords) * 100
-        
-        total_occurrences = sum(text_lower.count(keyword) for keyword in keywords)
-        repetition_bonus = min(20, total_occurrences * 2)
-        
-        return min(100, int(base_score + repetition_bonus))
-    
-    return 0
-
-def generate_enhanced_ai_prompts(analysis: VideoAnalysis, prompt_type: str, style: str, tone: str, 
-                                platforms: List[str], complexity_level: int) -> Dict[str, Dict]:
-    prompts = {}
-    
-    type_mapping = {
-        '🎨 Imagem/Visual': 'visual',
-        '🔊 Áudio/Narração': 'audio',
-        '🎬 Vídeo/Edição': 'video',
-        '📝 Texto/Roteiro': 'text',
-        '📊 Storyboard': 'storyboard',
-        '🚀 Todos Integrados': 'all'
-    }
-    
-    prompt_type_code = type_mapping.get(prompt_type, 'all')
-    
-    complexity_map = {
-        1: 'simples e direto',
-        2: 'detalhado',
-        3: 'completo com exemplos',
-        4: 'avançado com técnicas específicas',
-        5: 'profissional com referências de mercado'
-    }
-    
-    complexity_desc = complexity_map.get(complexity_level, 'detalhado')
-    
-    main_theme = analysis.themes[0] if analysis.themes else "conteúdo principal"
-    target_audience = analysis.target_audience
-    mood = analysis.mood
-    optimized_keywords = analysis.optimized_keywords[:3] if analysis.optimized_keywords else [main_theme]
-    
-    age_range = target_audience.get('age_range', 'Adultos')
-    interests = target_audience.get('interests', ['tecnologia'])
-    knowledge_level = target_audience.get('knowledge_level', 'Geral')
-    
-    if prompt_type_code in ['visual', 'all']:
-        prompts['visual_prompt'] = {
-            'title': '🎨 Prompt para Geração de Imagem/Visual',
-            'purpose': f'Criar conteúdo visual para o tema "{main_theme}" no estilo {style}',
-            'level': 'Avançado' if complexity_level >= 4 else 'Intermediário',
-            'prompt': f"""Crie uma imagem/vídeo/visual sobre "{main_theme}" com as seguintes especificações:
-
-TEMA PRINCIPAL: {main_theme.title()}
-PÚBLICO-ALVO: {age_range} interessados em {', '.join(interests)}
-ESTILO VISUAL: {style}
-TOM EMOCIONAL: {tone}
-PLATAFORMAS: {', '.join(platforms)}
-NÍVEL DE DETALHE: {complexity_desc}
-
-REQUISITOS ESPECÍFICOS:
-1. Composição que prende atenção nos primeiros 3 segundos
-2. Cores que refletem {tone.lower()} e {style.lower()}
-3. Elementos visuais relacionados a: {', '.join(optimized_keywords)}
-4. Layout otimizado para {platforms[0] if platforms else 'redes sociais'}
-5. Incluir espaço para texto/legenda se necessário
-
-ELEMENTOS A EVITAR:
-- Clichés visuais do tema
-- Cores muito vibrantes se tom for {tone}
-- Texto muito pequeno para mobile
-
-PALAVRAS-CHAVE PARA INSPIRAÇÃO: {' '.join(analysis.themes[:3]) if analysis.themes else main_theme} {mood} {style}""",
-            'parameters': {
-                'Aspect Ratio': '16:9' if 'YouTube' in platforms else '9:16' if 'TikTok' in platforms else '1:1',
-                'Color Palette': f'{style} com toques de {tone}',
-                'Main Focus': main_theme,
-                'Secondary Elements': ', '.join(analysis.themes[1:3]) if analysis.themes and len(analysis.themes) > 1 else 'contexto relacionado'
-            },
-            'example': f'Para o tema "{main_theme}" no estilo {style}, crie uma imagem com fundo gradiente suave, ícones modernos representando os conceitos principais, e tipografia clara que comunique {tone.lower()}.'
-        }
-    
-    if prompt_type_code in ['audio', 'all']:
-        prompts['audio_prompt'] = {
-            'title': '🔊 Prompt para Geração de Áudio/Narração',
-            'purpose': f'Criar narração/áudio para conteúdo sobre "{main_theme}"',
-            'level': 'Avançado' if complexity_level >= 4 else 'Intermediário',
-            'prompt': f"""Crie um script de narração/áudio sobre "{main_theme}" com as seguintes especificações:
-
-DURAÇÃO: {'3 minutos' if complexity_level >= 3 else '1 minuto'}
-PÚBLICO: {age_range} - {knowledge_level}
-TOM DE VOZ: {tone}
-ESTILO DE NARRAÇÃO: {'Profissional e técnico' if knowledge_level == 'Avançado' else 'Amigável e explicativo'}
-EMOÇÃO PRINCIPAL: {mood}
-PLATAFORMAS: {', '.join(platforms)}
-
-ESTRUTURA DO SCRIPT:
-[INTRODUÇÃO - 15% do tempo]
-- Gancho inicial que capture atenção
-- Apresentação do tema principal
-- O que o público vai aprender/ganhar
-
-[DESENVOLVIMENTO - 70% do tempo]
-- Ponto principal 1: {main_theme}
-- Ponto principal 2: {analysis.themes[1] if analysis.themes and len(analysis.themes) > 1 else 'Aplicação prática'}
-- Ponto principal 3: {analysis.themes[2] if analysis.themes and len(analysis.themes) > 2 else 'Benefícios'}
-- Exemplos e analogias para clareza
-
-[CONCLUSÃO - 15% do tempo]
-- Resumo dos pontos principais
-- Call-to-action apropriado
-- Encerramento memorável
-
-DIRETRIZES DE VOZ:
-- Velocidade: {'mais lenta para explicações complexas' if complexity_level >= 4 else 'moderada para melhor compreensão'}
-- Ênfase: destacar palavras-chave como {', '.join(optimized_keywords)}
-- Pausas: estratégicas para absorção de informação
-- Entonação: variar para manter interesse
-
-ELEMENTOS SONOROS SUGERIDOS:
-- Música de fundo: {mood} e {tone.lower()}
-- Efeitos sonoros: sutis para transições
-- Silêncios: estratégicos para ênfase""",
-            'parameters': {
-                'Tempo Total': f'{complexity_level * 1.5:.1f} minutos',
-                'Velocidade de Fala': '140-160 palavras/minuto',
-                'Tom Vocal': f'{tone} com {mood}',
-                'Formato de Arquivo': 'MP3 192kbps estéreo'
-            }
-        }
-    
-    if prompt_type_code in ['video', 'all']:
-        prompts['video_prompt'] = {
-            'title': '🎬 Prompt para Edição de Vídeo',
-            'purpose': f'Criar plano de edição para vídeo sobre "{main_theme}"',
-            'level': 'Profissional' if complexity_level >= 4 else 'Intermediário',
-            'prompt': f"""Crie um plano de edição de vídeo completo sobre "{main_theme}":
-
-METADADOS DO VÍDEO:
-- Tema Principal: {main_theme}
-- Duração Alvo: {'5-7 minutos' if complexity_level >= 4 else '3-5 minutos'}
-- Público-Alvo: {age_range}, {knowledge_level}
-- Plataformas: {', '.join(platforms)}
-- Estilo Geral: {style}
-- Tom Emocional: {tone}
-
-ESTRUTURA DETALHADA DE EDIÇÃO:
-
-[SEÇÃO 1: ABERTURA (0:00-0:30)]
-- 0:00-0:05: Hook visual impactante relacionado a {main_theme}
-- 0:05-0:15: Introdução rápida com texto/animação
-- 0:15-0:30: Apresentação do tema e benefícios
-
-[SEÇÃO 2: DESENVOLVIMENTO ({'2:00-5:00' if complexity_level >= 4 else '1:00-3:00'})]
-- Cena 1: Explicação do conceito principal
-  • Visual: {'Gráficos animados' if style == 'Profissional' else 'Imagens ilustrativas'}
-  • Áudio: Narração clara com música de fundo {mood}
-  • Transição: {'Corte rápido' if 'TikTok' in platforms else 'Dissolve suave'}
-  
-- Cena 2: Exemplo prático/aplicação
-  • Visual: Demonstração passo a passo
-  • Áudio: Efeitos sonoros para ações importantes
-  • Texto: Legenda de pontos-chave
-
-- Cena 3: Dicas avançadas/benefícios
-  • Visual: Lista animada com ícones
-  • Áudio: Música mais energética para engajamento
-  • Destaque: Box com informação importante
-
-[SEÇÃO 3: CONCLUSÃO (últimos 30 segundos)]
-- Resumo visual dos 3 principais pontos
-- Call-to-action claro e visível
-- Tela final com créditos e links
-
-TÉCNICAS DE EDIÇÃO RECOMENDADAS:
-1. Ritmo: {'Cortes rápidos (a cada 2-3s) para plataformas curtas' if 'TikTok' in platforms else 'Cortes moderados (a cada 5-7s)'}
-2. Transições: Usar {style.lower()} apropriadas para {tone.lower()}
-3. Cores: Grade de cores baseada em {mood} e {tone}
-4. Tipografia: Fontes {style.lower()} para {age_range}
-5. Animações: {'Sutis e profissionais' if style == 'Profissional' else 'Dinâmicas e chamativas'}
-
-CHECKLIST DE QUALIDADE:
-- [ ] Hook nos primeiros 3 segundos
-- [ ] Legibilidade em dispositivos móveis
-- [ ] Sincronia áudio-vídeo perfeita
-- [ ] Call-to-action claro
-- [ ] Otimizado para {platforms[0] if platforms else 'plataforma principal'}""",
-            'parameters': {
-                'Frame Rate': '30fps',
-                'Resolution': '1080p' if complexity_level >= 3 else '720p',
-                'Aspect Ratio': '9:16' if 'TikTok' in platforms else '16:9',
-                'Color Grading': f'{style} com {tone}',
-                'Audio Mix': '-6dB voz, -20dB música'
-            }
-        }
-    
-    if prompt_type_code in ['text', 'all']:
-        prompts['text_prompt'] = {
-            'title': '📝 Prompt para Redação/Roteiro',
-            'purpose': f'Escrever conteúdo textual sobre "{main_theme}"',
-            'level': 'Avançado' if complexity_level >= 4 else 'Intermediário',
-            'prompt': f"""Escreva um conteúdo textual sobre "{main_theme}" com:
-
-FORMATO: {'Artigo detalhado' if complexity_level >= 4 else 'Post de blog' if complexity_level >= 3 else 'Texto conciso'}
-TÓNICA: {tone}
-PÚBLICO: {age_range} com nível {knowledge_level}
-OBJETIVO: {'Educar profundamente' if complexity_level >= 4 else 'Informar de forma engajadora'}
-PLATAFORMAS: {', '.join(platforms)}
-
-ESTRUTURA DETALHADA:
-
-TÍTULO PRINCIPAL (Atraente e com palavra-chave):
-- Opção 1: [Number] Formas de [Benefício] com {main_theme}
-- Opção 2: O Guia Definitivo para {main_theme} em {datetime.now().year}
-- Opção 3: {main_theme.title()}: Como [Resolver Problema] em [Tempo]
-
-INTRODUÇÃO (Primeiro parágrafo - 100-150 palavras):
-- Start with hook: estatística surpreendente, pergunta provocativa ou cenário comum
-- Contextualize {main_theme} para o leitor
-- State value proposition: o que eles vão aprender/ganhar
-- Preview dos principais pontos
-
-CORPO DO TEXTO ({'1500-2000' if complexity_level >= 4 else '800-1200'} palavras):
-
-SEÇÃO 1: Fundamentos de {main_theme}
-- Definição clara e acessível
-- Por que é importante hoje
-- Estatísticas relevantes (se aplicável)
-- Exemplo prático do dia a dia
-
-SEÇÃO 2: {'Implementação Prática' if complexity_level >= 3 else 'Aplicações'}
-- Passo 1: [Ação específica e mensurável]
-  • Como fazer
-  • Ferramentas necessárias
-  • Tempo estimado
-- Passo 2: [Próxima ação]
-  • Dicas para sucesso
-  • Erros comuns a evitar
-  • Exemplo de caso real
-
-SEÇÃO 3: {'Otimizações Avançadas' if complexity_level >= 4 else 'Dicas Adicionais'}
-- Técnicas para melhores resultados
-- Integração com outros sistemas/conceitos
-- Métricas para acompanhar sucesso
-
-CONCLUSÃO (150-200 palavras):
-- Resumo dos pontos principais
-- Call-to-action específico (download, inscrição, comentário)
-- Pergunta para engajar comentários
-- Próximos passos sugeridos
-
-FORMATAÇÃO E SEO:
-- H1: Título principal
-- H2: Cada seção principal
-- H3: Subseções quando necessário
-- Palavras-chave: {', '.join(analysis.optimized_keywords[:5]) if analysis.optimized_keywords else main_theme}
-- Meta Description: 155 caracteres incluindo benefício principal
-- URL amigável: /guia-{main_theme.lower().replace(' ', '-')}
-
-TOM E ESTILO:
-- Voz: {'Autoritativa mas acessível' if tone == 'Autoritário' else tone.lower()}
-- Parágrafos: Curtos (3-4 linhas máximo)
-- Listas: Usar bullet points para dicas
-- Destaques: Negrito para conceitos importantes
-- Transições: Frases que conectem seções""",
-            'parameters': {
-                'Word Count': f'{complexity_level * 500} palavras',
-                'Reading Level': '8th grade' if knowledge_level == 'Iniciante' else '12th grade',
-                'Keywords': ', '.join(analysis.themes[:3]),
-                'CTAs': '1 por seção + final'
-            }
-        }
-    
-    if prompt_type_code in ['storyboard', 'all']:
-        prompts['storyboard_prompt'] = {
-            'title': '📊 Prompt para Storyboard',
-            'purpose': f'Criar storyboard para vídeo sobre "{main_theme}"',
-            'level': 'Profissional' if complexity_level >= 4 else 'Intermediário',
-            'prompt': f"""Crie um storyboard detalhado para um vídeo sobre "{main_theme}":
-
-INFORMAÇÕES BÁSICAS:
-- Tema: {main_theme}
-- Duração Total: {'5-7 minutos' if complexity_level >= 4 else '3-5 minutos'}
-- Público: {age_range}, {knowledge_level}
-- Estilo: {style}
-- Tom: {tone}
-- Plataformas: {', '.join(platforms)}
-
-ESTRUTURA DO STORYBOARD (Cenas e Tempos):
-
-CENA 1: ABERTURA (0:00-0:30)
-- Quadro 1 (0:00-0:05): Hook visual impactante
-  • Visual: {main_theme} representado de forma criativa
-  • Áudio: Música de impacto ou efeito sonoro
-  • Texto: Nenhum ou título muito breve
-  
-- Quadro 2 (0:05-0:15): Introdução
-  • Visual: Apresentador/âncora ou animação introdutória
-  • Áudio: Voz off explicando o que será abordado
-  • Texto: "Hoje: {main_theme.title()}"
-  
-- Quadro 3 (0:15-0:30): Benefícios
-  • Visual: 3 ícones ou elementos visuais representando benefícios
-  • Áudio: Lista dos principais benefícios que o espectador terá
-  • Texto: "Você vai aprender: [Benefício 1], [Benefício 2], [Benefício 3]"
-
-CENA 2: CONCEITO PRINCIPAL ({'1:00-2:30' if complexity_level >= 4 else '0:30-1:30'})
-- Quadro 4: Explicação do conceito
-  • Visual: {'Gráficos animados explicando o conceito' if style == 'Profissional' else 'Imagens ilustrativas'}
-  • Áudio: Narração clara e didática
-  • Texto: Definição de {main_theme}
-  
-- Quadro 5: Exemplo prático
-  • Visual: Demonstração passo a passo ou caso real
-  • Áudio: Descrição do exemplo com detalhes
-  • Texto: "Exemplo Prático: [Nome do exemplo]"
-  
-- Quadro 6: Dados/estatísticas
-  • Visual: Gráficos ou números animados
-  • Áudio: Citação de dados relevantes
-  • Texto: Estatísticas principais
-
-CENA 3: APLICAÇÕES ({'2:30-4:00' if complexity_level >= 4 else '1:30-2:30'})
-- Quadro 7: Aplicação 1
-  • Visual: Demonstração da primeira aplicação
-  • Áudio: Instruções passo a passo
-  • Texto: "Passo 1: [Descrição]"
-  
-- Quadro 8: Aplicação 2
-  • Visual: Demonstração da segunda aplicação
-  • Áudio: Instruções passo a passo
-  • Texto: "Passo 2: [Descrição]"
-  
-- Quadro 9: Aplicação 3
-  • Visual: Demonstração da terceira aplicação
-  • Áudio: Instruções passo a passo
-  • Texto: "Passo 3: [Descrição]"
-
-CENA 4: CONCLUSÃO (últimos 30 segundos)
-- Quadro 10: Resumo (X:XX-X:XX)
-  • Visual: 3 pontos principais em tela
-  • Áudio: Resumo conciso do conteúdo
-  • Texto: "Em resumo: 1. [Ponto 1], 2. [Ponto 2], 3. [Ponto 3]"
-  
-- Quadro 11: Call-to-Action (X:XX-X:XX)
-  • Visual: Botão ou elemento visual destacado
-  • Áudio: Chamada clara para ação
-  • Texto: "{'Inscreva-se agora!' if 'YouTube' in platforms else 'Siga para mais!'}"
-  
-- Quadro 12: Tela final (X:XX-X:XX)
-  • Visual: Créditos e informações de contato
-  • Áudio: Música de encerramento
-  • Texto: "Obrigado por assistir! | @canal | links na descrição"
-
-DIRETRIZES VISUAIS:
-- Estilo: {style}
-- Paleta de cores: Baseada em {mood} e {tone}
-- Tipografia: Fontes {style.lower()} para {age_range}
-- Transições: {style.lower()} apropriadas para {tone.lower()}
-- Animações: {'Sutis e profissionais' if style == 'Profissional' else 'Dinâmicas e chamativas'}
-
-FORMATO DO STORYBOARD:
-Para cada quadro, especificar:
-1. Número da cena/quadro
-2. Tempo (início-fim)
-3. Descrição visual detalhada
-4. Áudio (narração/música/efeitos)
-5. Texto em tela (se houver)
-6. Transição para próximo quadro
-
-EXEMPLO DE QUADRO COMPLETO:
-[Cena 2, Quadro 4]
-Tempo: 1:00-1:20
-Visual: Animação de gráficos explicando o conceito de {main_theme}. Cores: azul e branco. Elementos se movem suavemente.
-Áudio: "Agora vamos entender o conceito fundamental de {main_theme}. Basicamente, trata-se de..."
-Texto: "CONCEITO: {main_theme.upper()}"
-Transição: Dissolve para Quadro 5""",
-            'parameters': {
-                'Total de Quadros': '12-16 quadros',
-                'Duração por Quadro': '15-30 segundos',
-                'Formato de Saída': 'PDF ou imagem com descrições detalhadas',
-                'Elementos Visuais': f'{style} com foco em {main_theme}'
-            }
-        }
-    
-    return prompts
-
-def calculate_content_quality_score(analysis: VideoAnalysis) -> int:
-    score = 50
-    
-    if hasattr(analysis, 'sentiment_scores'):
-        positive = analysis.sentiment_scores.get('positive', 0)
-        score += positive * 0.2
-    
-    if analysis.themes and len(analysis.themes) >= 2:
-        score += 10
-    
-    if analysis.key_moments and len(analysis.key_moments) >= 3:
-        score += 15
-    
-    if analysis.improvement_suggestions:
-        score += min(20, len(analysis.improvement_suggestions) * 5)
-    
-    if hasattr(analysis, 'estimated_engagement'):
-        score += analysis.estimated_engagement * 0.2
-    
-    return min(100, int(score))
-
-def calculate_category_score(analysis: VideoAnalysis, category: str) -> int:
-    base_scores = {
-        'Conteúdo': 60,
-        'Engajamento': 55,
-        'Técnico': 70,
-        'Narrativa': 65
-    }
-    
-    score = base_scores.get(category, 50)
-    
-    if category == 'Conteúdo' and analysis.themes:
-        score += min(30, len(analysis.themes) * 7)
-    
-    if category == 'Engajamento' and analysis.key_moments:
-        avg_importance = sum(m.get('importance', 0) for m in analysis.key_moments[:3]) / 3
-        score += avg_importance * 0.3
-    
-    if category == 'Narrativa' and hasattr(analysis, 'narrative_structure'):
-        clarity = analysis.narrative_structure.get('clarity_score', 0)
-        score += clarity * 0.3
-    
-    return min(100, int(score))
-
-def get_priority_suggestions(analysis: VideoAnalysis) -> List[Dict[str, Any]]:
-    suggestions = []
-    
-    if hasattr(analysis, 'transcript_summary'):
-        word_count = len(analysis.transcript_summary.split())
-        if word_count < 200:
-            suggestions.append({
-                'id': 'length',
-                'title': 'Conteúdo Muito Curto',
-                'description': 'Seu conteúdo poderia se beneficiar de mais profundidade e detalhes.',
-                'impact': 9,
-                'difficulty': 4,
-                'actions': [
-                    'Adicionar exemplos práticos',
-                    'Incluir estatísticas relevantes',
-                    'Expandir explicações técnicas',
-                    'Adicionar estudos de caso'
-                ],
-                'ai_prompt': f'Expanda o conteúdo sobre {analysis.themes[0]} adicionando 3 exemplos práticos, 2 estatísticas relevantes e 1 estudo de caso. Mantenha o tom {analysis.mood}.'
-            })
-    
-    if analysis.key_moments and len(analysis.key_moments) < 3:
-        suggestions.append({
-            'id': 'structure',
-            'title': 'Estrutura Pode Melhorar',
-            'description': 'A estrutura do conteúdo pode ser otimizada para melhor retenção.',
-            'impact': 8,
-            'difficulty': 5,
-            'actions': [
-                'Criar introdução mais impactante',
-                'Adicionar transições entre tópicos',
-                'Incluir resumos parciais',
-                'Melhorar conclusão com call-to-action'
-            ],
-            'ai_prompt': f'Reestruture o conteúdo sobre {analysis.themes[0]} para ter: 1) Hook impactante, 2) 3 pontos principais claros, 3) Resumos parciais, 4) Conclusão forte com CTA. Tom: {analysis.mood}.'
-        })
-    
-    if hasattr(analysis, 'estimated_engagement') and analysis.estimated_engagement < 60:
-        suggestions.append({
-            'id': 'engagement',
-            'title': 'Aumentar Engajamento',
-            'description': 'Elementos de engajamento podem melhorar a retenção do público.',
-            'impact': 7,
-            'difficulty': 3,
-            'actions': [
-                'Adicionar perguntas ao público',
-                'Incluir elementos interativos',
-                'Usar mais histórias e anedotas',
-                'Variar ritmo e tom de voz'
-            ],
-            'ai_prompt': f'Reescreva partes do conteúdo sobre {analysis.themes[0]} para incluir: 1) 2 perguntas retóricas, 2) 1 história pessoal relevante, 3) Variação de ritmo, 4) Elementos surpresa. Público: {analysis.target_audience.get("age_range", "adultos")}.'
-        })
-    
-    if hasattr(analysis, 'target_audience') and analysis.target_audience.get('knowledge_level') == 'Avançado':
-        suggestions.append({
-            'id': 'clarity',
-            'title': 'Simplificar Conteúdo Complexo',
-            'description': 'Conteúdo muito técnico pode alienar parte do público.',
-            'impact': 6,
-            'difficulty': 6,
-            'actions': [
-                'Adicionar analogias simples',
-                'Criar glossário de termos',
-                'Incluir exemplos do dia a dia',
-                'Oferecer versão resumida'
-            ],
-            'ai_prompt': f'Simplifique o conteúdo técnico sobre {analysis.themes[0]} para nível {analysis.target_audience.get("knowledge_level")}. Adicione 3 analogias, 2 exemplos práticos e 1 resumo em linguagem simples.'
-        })
-    
-    suggestions.sort(key=lambda x: x['impact'], reverse=True)
-    
-    return suggestions
-
-def get_quick_improvements(analysis: VideoAnalysis) -> List[Dict[str, Any]]:
-    improvements = []
-    
-    improvements.append({
-        'id': 'thumbnail',
-        'title': 'Thumbnail Atraente',
-        'description': 'Criar thumbnail com texto legível e imagem impactante.',
-        'time_estimate': '30 minutos',
-        'impact': 'Alto',
-        'tools': ['Canva', 'Photoshop', 'Thumbnail makers']
-    })
-    
-    improvements.append({
-        'id': 'hook',
-        'title': 'Hook nos Primeiros 5s',
-        'description': 'Reeditar início para prender atenção imediata.',
-        'time_estimate': '1 hora',
-        'impact': 'Muito Alto',
-        'tools': ['Editor de vídeo', 'Recorte dos primeiros segundos']
-    })
-    
-    improvements.append({
-        'id': 'subtitles',
-        'title': 'Legendas Sincronizadas',
-        'description': 'Adicionar legendas precisas para acessibilidade.',
-        'time_estimate': '2 horas',
-        'impact': 'Alto',
-        'tools': ['Auto-subtitle tools', 'Editor de legendas']
-    })
-    
-    if analysis.themes and 'tecnologia' in analysis.themes:
-        improvements.append({
-            'id': 'graphics',
-            'title': 'Gráficos Explicativos',
-            'description': 'Inserir gráficos simples para explicar conceitos.',
-            'time_estimate': '1.5 horas',
-            'impact': 'Médio-Alto',
-            'tools': ['Canva', 'PowerPoint', 'Google Slides']
-        })
-    
-    return improvements
-
-def generate_action_plan(analysis: VideoAnalysis, focus_areas: List[str]) -> Dict[str, Dict]:
-    action_plan = {}
-    
-    if 'Engajamento Inicial' in focus_areas:
-        action_plan['Engajamento Inicial'] = {
-            'objective': 'Aumentar retenção nos primeiros 30 segundos',
-            'tasks': [
-                {'task': 'Analisar dados de retenção atuais', 'time_estimate': '30 min', 'completed': False},
-                {'task': 'Redesenhar hook visual/verbal', 'time_estimate': '1 hora', 'completed': False},
-                {'task': 'Testar 3 versões diferentes', 'time_estimate': '2 horas', 'completed': False},
-                {'task': 'Implementar melhor versão', 'time_estimate': '1 hora', 'completed': False}
-            ],
-            'total_time': '4.5 horas',
-            'success_metrics': 'Retenção +15% nos primeiros 30s'
-        }
-    
-    if 'Retenção de Audiência' in focus_areas:
-        action_plan['Retenção de Audiência'] = {
-            'objective': 'Manter audiência engajada durante todo o vídeo',
-            'tasks': [
-                {'task': 'Identificar pontos de queda de audiência', 'time_estimate': '45 min', 'completed': False},
-                {'task': 'Inserir elementos surpresa nos pontos críticos', 'time_estimate': '1.5 horas', 'completed': False},
-                {'task': 'Variar ritmo e formato a cada 60-90s', 'time_estimate': '2 horas', 'completed': False},
-                {'task': 'Adicionar perguntas interativas', 'time_estimate': '1 hora', 'completed': False}
-            ],
-            'total_time': '5.25 horas',
-            'success_metrics': 'Retenção média +20%'
-        }
-    
-    if 'Qualidade Visual' in focus_areas:
-        action_plan['Qualidade Visual'] = {
-            'objective': 'Melhorar aparência e profissionalismo visual',
-            'tasks': [
-                {'task': 'Ajustar color grading para consistência', 'time_estimate': '1.5 horas', 'completed': False},
-                {'task': 'Padronizar fontes e tamanhos de texto', 'time_estimate': '1 hora', 'completed': False},
-                {'task': 'Adicionar transições suaves entre cenas', 'time_estimate': '1.5 horas', 'completed': False},
-                {'task': 'Otimizar para diferentes tamanhos de tela', 'time_estimate': '1 hora', 'completed': False}
-            ],
-            'total_time': '5 horas',
-            'success_metrics': 'Feedback visual positivo +30%'
-        }
-    
-    return action_plan
-
-# ==========================
-# NOVAS FUNÇÕES PARA A ESTRUTURA NARRATIVA
-# ==========================
-def generate_act_prompts(act: NarrativeAct, analysis: Optional[VideoAnalysis] = None) -> Dict[str, str]:
-    """Gera prompts para um ato baseado em seu tom, estilo e conteúdo"""
-    if not act.text_content:
-        return {}
-    
-    # Se não houver análise, cria uma análise simples do texto do ato
-    if analysis is None:
-        text_analysis = analyze_text_for_themes(act.text_content)
-        # Cria uma análise mínima
-        analysis = VideoAnalysis(
-            themes=[text_analysis['primary_theme']],
-            key_moments=[],
-            improvement_suggestions=[],
-            ai_prompts={},
-            transcript_summary=act.text_content[:200],
-            mood=act.emotional_tone,
-            target_audience={'age_range': '25-44', 'interests': [text_analysis['primary_theme']], 'knowledge_level': 'Intermediário'},
-            optimized_keywords=extract_optimized_keywords(act.text_content, 5),
-            sentiment_scores=analyze_sentiment_enhanced(act.text_content),
-            estimated_engagement=50,
-            narrative_structure={},
-            theme_scores={}
-        )
-    
-    # Gera prompts avançados usando a função existente, mas ajustando para o ato
-    # Usamos um prompt_type 'all' para gerar todos os tipos
-    platforms = ['YouTube']  # Poderíamos permitir customização
-    complexity = 3  # Nível médio
-    
-    prompts = generate_enhanced_ai_prompts(
-        analysis=analysis,
-        prompt_type='🚀 Todos Integrados',
-        style=act.visual_style,
-        tone=act.emotional_tone,
-        platforms=platforms,
-        complexity_level=complexity
-    )
-    
-    # Adiciona também prompts específicos para o tom do ato
-    # Podemos enriquecer com informações do ato
-    for key in prompts:
-        if 'prompt' in prompts[key]:
-            prompts[key]['prompt'] = f"[ATO {act.number}: {act.title}]\n" + prompts[key]['prompt']
-    
-    return prompts
-
-def render_narrative_tab():
-    """Aba para configuração da estrutura narrativa"""
-    st.markdown("### 🎭 Estrutura Narrativa")
-    
-    # Seleção de template
-    template_options = list(NARRATIVE_TEMPLATES.keys())
-    if not template_options:
-        st.warning("Nenhum template disponível.")
-        return
-    
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        selected_template = st.selectbox(
-            "Escolha um template narrativo",
-            template_options,
-            format_func=lambda x: NARRATIVE_TEMPLATES[x].name,
-            key="narrative_template_select"
-        )
-    
-    with col2:
-        if st.button("📋 Carregar Template", type="primary", use_container_width=True):
-            template = NARRATIVE_TEMPLATES[selected_template]
-            st.session_state.narrative_template = template
-            st.success(f"Template '{template.name}' carregado!")
-            st.rerun()
-    
-    if st.session_state.narrative_template is None:
-        st.info("Selecione um template e clique em 'Carregar Template' para começar.")
-        return
-    
-    template = st.session_state.narrative_template
-    
-    # Exibe descrição
-    st.info(template.description)
-    
-    # Opção de personalizar durações
-    st.markdown("#### ⏱️ Ajuste de Duração (opcional)")
-    total_minutes = st.number_input(
-        "Duração total desejada (minutos)",
-        min_value=1, max_value=60,
-        value=int(sum(act.target_duration for act in template.acts) / 60),
-        key="narrative_total_duration"
-    )
-    total_seconds = total_minutes * 60
-    
-    # Distribuição automática proporcional
-    if st.button("🔄 Distribuir automaticamente", use_container_width=True):
-        total_weight = sum(act.target_duration for act in template.acts)
-        if total_weight > 0:
-            for act in template.acts:
-                act.target_duration = (act.target_duration / total_weight) * total_seconds
-        st.success("Durações recalculadas proporcionalmente!")
-    
-    st.markdown("#### 📝 Conteúdo dos Atos")
-    
-    # Para cada ato, permite edição e geração de prompts
-    for i, act in enumerate(template.acts):
-        with st.expander(f"Ato {act.number}: {act.title}", expanded=i==0):
-            col1, col2 = st.columns(2)
-            with col1:
-                act.emotional_tone = st.selectbox(
-                    f"Tom emocional",
-                    ["misterioso", "energético", "reflexivo", "íntimo", "informativo", "convincente"],
-                    index=["misterioso", "energético", "reflexivo", "íntimo", "informativo", "convincente"].index(act.emotional_tone) if act.emotional_tone in ["misterioso","energético","reflexivo","íntimo","informativo","convincente"] else 0,
-                    key=f"narrative_tone_{i}"
-                )
-                act.visual_style = st.selectbox(
-                    f"Estilo visual",
-                    ["dark", "vibrante", "suave", "clean", "dinâmico", "neutro"],
-                    key=f"narrative_style_{i}"
-                )
-            with col2:
-                act.target_duration = st.number_input(
-                    f"Duração (segundos)",
-                    min_value=10, max_value=600,
-                    value=int(act.target_duration),
-                    key=f"narrative_dur_{i}"
-                )
-            
-            # Campo de texto para o roteiro do ato
-            act.text_content = st.text_area(
-                f"Roteiro do Ato {act.number}",
-                value=act.text_content,
-                height=150,
-                key=f"narrative_text_{i}",
-                placeholder="Digite ou cole o texto deste ato..."
-            )
-            
-            # Botão para gerar prompts com IA baseado no texto e nas configurações
-            if act.text_content and st.button(f"✨ Gerar Prompts para Ato {act.number}", key=f"narrative_gen_prompt_{i}"):
-                with st.spinner("Gerando prompts..."):
-                    # Usa a análise existente se disponível, ou cria uma análise simples
-                    if st.session_state.video_analysis:
-                        analysis = st.session_state.video_analysis
-                    else:
-                        # Cria uma análise básica a partir do texto do ato
-                        text_analysis = analyze_text_for_themes(act.text_content)
-                        analysis = VideoAnalysis(
-                            themes=[text_analysis['primary_theme']],
-                            key_moments=[],
-                            improvement_suggestions=[],
-                            ai_prompts={},
-                            transcript_summary=act.text_content[:200],
-                            mood=act.emotional_tone,
-                            target_audience={'age_range': '25-44', 'interests': [text_analysis['primary_theme']], 'knowledge_level': 'Intermediário'},
-                            optimized_keywords=extract_optimized_keywords(act.text_content, 5),
-                            sentiment_scores=analyze_sentiment_enhanced(act.text_content),
-                            estimated_engagement=50,
-                            narrative_structure={},
-                            theme_scores={}
-                        )
-                    
-                    prompts = generate_enhanced_ai_prompts(
-                        analysis=analysis,
-                        prompt_type='🚀 Todos Integrados',
-                        style=act.visual_style,
-                        tone=act.emotional_tone,
-                        platforms=['YouTube'],
-                        complexity_level=3
-                    )
-                    act.prompts = prompts
-                    st.success("Prompts gerados!")
-            
-            # Exibe prompts se existirem
-            if act.prompts:
-                st.markdown("**📋 Prompts gerados:**")
-                for p_name, p_data in act.prompts.items():
-                    with st.expander(f"{p_data['title']}", expanded=False):
-                        st.code(p_data['prompt'], language='text')
-    
-    # Botão para salvar a estrutura no estado da sessão
-    if st.button("💾 Salvar Estrutura Narrativa", type="primary", use_container_width=True):
-        st.session_state.narrative_template = template
-        st.success("Estrutura salva! Vá para a aba de IA para gerar os prompts completos ou para a aba de exportação para renderizar o vídeo por atos.")
-
-# ==========================
-# FUNÇÕES DE INTERFACE (modificadas)
-# ==========================
-def render_text_tab():
-    st.markdown("### 📝 Transcrição e Texto")
-    
-    col1, col2 = st.columns([3, 1])
-    
-    with col1:
-        if st.session_state.transcribed_text:
-            st.markdown("#### 📋 Texto Transcrito")
-            
-            edited_text = st.text_area(
-                "Texto transcrito (editável)",
-                value=st.session_state.transcribed_text,
-                height=400,
-                key="transcription_editor"
-            )
-            
-            if edited_text != st.session_state.transcribed_text:
-                st.session_state.transcribed_text = edited_text
-                if st.button("💾 Salvar Alterações", use_container_width=True):
-                    st.success("Texto salvo!")
-            
-            col_stats1, col_stats2, col_stats3 = st.columns(3)
-            with col_stats1:
-                word_count = len(st.session_state.transcribed_text.split())
-                st.metric("📝 Palavras", word_count)
-            with col_stats2:
-                char_count = len(st.session_state.transcribed_text)
-                st.metric("🔤 Caracteres", char_count)
-            with col_stats3:
-                reading_time = round(word_count / 150, 1)
-                st.metric("⏱️ Tempo de Leitura", f"{reading_time} min")
-            
-            if st.session_state.text_segments:
-                st.markdown("#### 🎯 Segmentos do Texto")
-                for segment in st.session_state.text_segments:
-                    with st.expander(f"Segmento {segment['id']}: {segment['start_time']:.1f}s - {segment['end_time']:.1f}s", expanded=False):
-                        st.write(segment['text'])
-                        st.caption(f"Palavras: {segment['word_count']} | Duração: {segment['duration']:.1f}s")
-            
-        else:
-            st.info("""
-            **Para obter transcrição:**
-            
-            1. **Faça upload de um áudio** ou vídeo na barra lateral
-            2. **Clique em 'Transcrever Áudio'** na aba Upload
-            3. **Aguarde o processamento** pela IA
-            
-            **Funcionalidades disponíveis:**
-            • 📝 Edição do texto transcrito
-            • 🎯 Divisão automática em segmentos
-            • 📊 Estatísticas do conteúdo
-            • 💾 Exportação do texto
-            """)
-    
-    with col2:
-        st.markdown("#### 🔧 Ferramentas de Texto")
-        
-        if st.session_state.transcribed_text and st.button("🎯 Analisar Temas", use_container_width=True):
-            with st.spinner("Analisando temas..."):
-                analysis = analyze_text_for_themes(st.session_state.transcribed_text)
-                
-                st.markdown("**📊 Temas Identificados:**")
-                for theme, data in list(analysis['all_themes'].items())[:3]:
-                    st.markdown(f"• **{theme.title()}** ({data['confidence']}%)")
-                
-                if analysis['primary_theme']:
-                    st.success(f"Tema principal: **{analysis['primary_theme'].title()}**")
-        
-        if st.session_state.transcribed_text and st.button("📄 Gerar Resumo", use_container_width=True):
-            with st.spinner("Gerando resumo..."):
-                text = st.session_state.transcribed_text
-                sentences = re.split(r'[.!?]+', text)
-                
-                summary = ' '.join(sentences[:3])
-                st.markdown("**📄 Resumo:**")
-                st.info(summary)
-        
-        if st.session_state.transcribed_text and st.button("🔪 Dividir em Partes", use_container_width=True):
-            if st.session_state.audio_info and 'duration' in st.session_state.audio_info:
-                segments = segment_text_by_time(
-                    st.session_state.transcribed_text,
-                    st.session_state.audio_info['duration'],
-                    num_segments=8
-                )
-                st.session_state.text_segments = segments
-                st.success(f"Texto dividido em {len(segments)} segmentos!")
-            else:
-                st.warning("Informações de áudio não disponíveis para divisão por tempo")
-        
-        if st.session_state.transcribed_text:
-            st.markdown("---")
-            st.markdown("**💾 Exportar:**")
-            
-            text_bytes = st.session_state.transcribed_text.encode('utf-8')
-            st.download_button(
-                label="📥 Baixar TXT",
-                data=text_bytes,
-                file_name=f"transcricao_{st.session_state.project_name}.txt",
-                mime="text/plain",
-                use_container_width=True
-            )
-
-def render_edit_tab():
-    st.markdown("### ✂️ Edição de Vídeo")
-    
-    if not st.session_state.video_parts and st.session_state.video_path:
-        if st.button("🔪 Dividir Vídeo em Partes", type="primary", use_container_width=True):
-            with st.spinner("Dividindo vídeo em partes..."):
-                parts = split_video_into_parts(st.session_state.video_path)
-                if parts:
-                    st.session_state.video_parts = parts
-                    st.session_state.is_partitioned = True
-                    st.success(f"Vídeo dividido em {len(parts)} partes!")
-                    st.rerun()
-                else:
-                    st.error("Falha ao dividir o vídeo")
-    
-    if st.session_state.video_parts:
-        total_duration = sum(p.duration for p in st.session_state.video_parts if hasattr(p, 'duration'))
-        
-        st.markdown('<div class="timeline-container">', unsafe_allow_html=True)
-        
-        for part in st.session_state.video_parts:
-            if part.duration > 0 and total_duration > 0:
-                width_percent = (part.duration / total_duration) * 100
-                left_percent = (part.start_time / total_duration) * 100
-                
-                status_color = "#4cc9f0" if part.status != "error" else "#ff375f"
-                
-                st.markdown(f"""
-                <div class="timeline-segment" style="left: {left_percent}%; width: {width_percent}%; background: linear-gradient(90deg, {status_color}, {status_color}cc);"
-                     title="Parte {part.part_id}: {part.start_time:.1f}s - {part.end_time:.1f}s">
-                    <div style="font-size: 0.7rem;">{part.part_id}</div>
-                    <div style="font-size: 0.6rem;">{part.duration:.0f}s</div>
-                </div>
-                """, unsafe_allow_html=True)
-        
-        st.markdown('</div>', unsafe_allow_html=True)
-        
-        st.markdown("#### 📋 Partes do Vídeo")
-        
-        for i, part in enumerate(st.session_state.video_parts):
-            with st.expander(f"Parte {part.part_id}: {part.start_time:.1f}s - {part.end_time:.1f}s ({part.duration:.1f}s)", expanded=False):
-                col1, col2 = st.columns([3, 1])
-                
-                with col1:
-                    if os.path.exists(part.output_path):
-                        try:
-                            with open(part.output_path, 'rb') as f:
-                                video_bytes = f.read()
-                            st.video(video_bytes, format='video/mp4')
-                        except Exception as e:
-                            st.warning(f"Não foi possível carregar esta parte: {str(e)}")
-                    else:
-                        st.warning("Arquivo da parte não encontrado")
-                    
-                    st.markdown("##### 🎨 Efeitos Visuais")
-                    selected_effects = st.multiselect(
-                        f"Selecione efeitos - Parte {part.part_id}",
-                        list(VIDEO_EFFECTS.keys()),
-                        format_func=lambda x: VIDEO_EFFECTS[x]['name'],
-                        key=f"effects_{i}"
-                    )
-                    
-                    if selected_effects and st.button(f"Aplicar Efeitos - Parte {part.part_id}", key=f"apply_{i}"):
-                        with st.spinner(f"Aplicando efeitos na parte {part.part_id}..."):
-                            for effect in selected_effects:
-                                new_path = apply_video_effect(part.output_path, effect)
-                                if new_path != part.output_path:
-                                    part.output_path = new_path
-                                    part.effects.append(effect)
-                            st.success("Efeitos aplicados!")
-                
-                with col2:
-                    st.markdown("##### ⚡ Ações Rápidas")
-                    
-                    if st.button(f"👁️ Visualizar", key=f"view_{i}", use_container_width=True):
-                        st.session_state.selected_part_index = i
-                    
-                    if st.button(f"🔊 Extrair Áudio", key=f"extract_{i}", use_container_width=True):
-                        with st.spinner("Extraindo áudio..."):
-                            audio_path = extract_audio_from_video(part.output_path)
-                            if audio_path:
-                                part.audio_path = audio_path
-                                st.success("Áudio extraído!")
-                    
-                    if st.button(f"🎨 Pré-visualizar", key=f"preview_{i}", use_container_width=True):
-                        if os.path.exists(part.output_path):
-                            with open(part.output_path, 'rb') as f:
-                                st.video(f.read())
-                    
-                    st.markdown("##### 📊 Informações")
-                    st.markdown(f"**Status:** {part.status}")
-                    st.markdown(f"**Tamanho:** {part.size_mb:.1f} MB")
-                    if part.effects:
-                        st.markdown(f"**Efeitos:** {', '.join(part.effects)}")
-    
-    elif st.session_state.video_path:
-        st.info("Clique em 'Dividir Vídeo em Partes' para começar a edição")
-    else:
-        st.info("Faça upload de um vídeo na barra lateral para começar a edição")
-
-def render_audio_tab():
-    st.markdown("### 🔊 Edição de Áudio")
-    
-    with st.expander("🔧 Testar Todas as Vozes", expanded=False):
-        if st.button("🎙️ Testar Todas as Vozes", use_container_width=True):
-            working, non_working = test_all_voices()
-            st.success(f"✅ Vozes funcionando: {', '.join(working)}")
-            if non_working:
-                st.warning(f"❌ Vozes não funcionando: {', '.join(non_working)}")
-    
-    if st.session_state.audio_path:
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            try:
-                with open(st.session_state.audio_path, 'rb') as f:
-                    audio_bytes = f.read()
-                st.audio(audio_bytes, format='audio/mp3')
-            except:
-                st.warning("Não foi possível carregar o áudio")
-            
-            if st.session_state.audio_info:
-                info = st.session_state.audio_info
-                col_info1, col_info2, col_info3 = st.columns(3)
-                with col_info1:
-                    st.metric("⏱️ Duração", f"{info.get('duration', 0):.1f}s")
-                with col_info2:
-                    st.metric("📦 Tamanho", f"{info.get('size_mb', 0):.1f} MB")
-                with col_info3:
-                    st.metric("🎵 Formato", info.get('format', 'Desconhecido'))
-            
-            st.markdown("#### 🎚️ Efeitos de Áudio")
-            
-            selected_audio_effects = st.multiselect(
-                "Selecione efeitos para aplicar",
-                list(AUDIO_EFFECTS.keys()),
-                format_func=lambda x: AUDIO_EFFECTS[x]['name'],
-                key="audio_effects_select"
-            )
-            
-            if selected_audio_effects:
-                st.markdown("##### ⚙️ Configurações dos Efeitos")
-                
-                effect_params = {}
-                for effect in selected_audio_effects:
-                    with st.expander(f"⚙️ {AUDIO_EFFECTS[effect]['name']}", expanded=True):
-                        st.write(AUDIO_EFFECTS[effect]['description'])
-                        
-                        params_container = st.container()
-                        with params_container:
-                            for param, value in AUDIO_EFFECTS[effect]['params'].items():
-                                if isinstance(value, (int, float)):
-                                    if isinstance(value, int):
-                                        min_val = -100 if param == 'threshold' else 0
-                                        max_val = 100 if param == 'threshold' else 10
-                                        step = 1
-                                    else:
-                                        min_val = 0.0
-                                        max_val = 2.0
-                                        step = 0.1
-                                    
-                                    effect_params[f"{effect}_{param}"] = st.slider(
-                                        param.replace('_', ' ').title(),
-                                        min_val, max_val, float(value), step,
-                                        key=f"audio_effect_{effect}_{param}"
-                                    )
-                
-                if st.button("🎵 Aplicar Efeitos de Áudio", type="primary", use_container_width=True):
-                    st.info("Funcionalidade de efeitos de áudio será implementada na próxima versão")
-                    st.success("Configurações de efeitos salvas!")
-        
-        with col2:
-            st.markdown("#### 🗣️ Texto para Áudio")
-            
-            voice_options = list(DEFAULT_VOICE_PROFILES.keys())
-            selected_voice = st.selectbox(
-                "Voz",
-                voice_options,
-                format_func=lambda x: DEFAULT_VOICE_PROFILES[x].name,
-                index=voice_options.index(st.session_state.selected_voice)
-            )
-            
-            tts_text = st.text_area(
-                "Texto para converter em áudio",
-                value=st.session_state.tts_text,
-                height=150,
-                placeholder="Digite o texto que deseja converter em áudio...",
-                key="tts_text_input"
-            )
-            
-            if tts_text:
-                st.session_state.tts_text = tts_text
-                
-                col_speed, col_pitch, col_volume = st.columns(3)
-                with col_speed:
-                    speed = st.slider("Velocidade", 0.5, 2.0, 1.0, 0.1, key="tts_speed")
-                with col_pitch:
-                    pitch = st.slider("Tom", 0.5, 2.0, 1.0, 0.1, key="tts_pitch")
-                with col_volume:
-                    volume = st.slider("Volume", 0.0, 2.0, 1.0, 0.1, key="tts_volume")
-                
-                if st.button("🔊 Converter Texto em Áudio", type="primary", use_container_width=True):
-                    with st.spinner("Convertendo texto em áudio..."):
-                        voice_profile = DEFAULT_VOICE_PROFILES[selected_voice]
-                        voice_profile.speed = speed
-                        voice_profile.pitch = pitch
-                        voice_profile.volume = volume
-                        
-                        success, result = text_to_speech_edge(tts_text, voice_profile)
-                        
-                        if success:
-                            try:
-                                with open(result, 'rb') as f:
-                                    audio_data = f.read()
-                                st.audio(audio_data, format='audio/mp3')
-                                st.success("Áudio gerado com sucesso!")
-                                
-                                st.download_button(
-                                    label="💾 Baixar Áudio Gerado",
-                                    data=audio_data,
-                                    file_name=f"tts_{st.session_state.project_name}.mp3",
-                                    mime="audio/mp3",
-                                    use_container_width=True
-                                )
-                            except:
-                                st.error("Erro ao carregar áudio gerado")
-                        else:
-                            st.error(f"Falha na conversão: {result}")
-            
-            st.markdown("#### 🔊 Ajuste de Volume")
-            volume_slider = st.slider("Nível de Volume", 0.0, 2.0, 1.0, 0.1, key="volume_slider")
-            
-            if volume_slider != 1.0 and st.button("🔊 Ajustar Volume do Áudio", use_container_width=True):
-                with st.spinner("Ajustando volume..."):
-                    output_path = os.path.join(
-                        st.session_state.working_dir, 
-                        f"volume_adjusted_{os.path.basename(st.session_state.audio_path)}"
-                    )
-                    if adjust_audio_volume(st.session_state.audio_path, output_path, volume_slider):
-                        st.session_state.audio_path = output_path
-                        st.session_state.audio_info = get_media_info(output_path, 'audio')
-                        st.success("Volume ajustado com sucesso!")
-                        st.rerun()
-                    else:
-                        st.error("Falha ao ajustar volume")
-            
-            st.markdown("---")
-            if os.path.exists(st.session_state.audio_path):
-                with open(st.session_state.audio_path, 'rb') as f:
-                    audio_data = f.read()
-                
-                st.download_button(
-                    label="💾 Baixar Áudio",
-                    data=audio_data,
-                    file_name=f"audio_{st.session_state.project_name}.mp3",
-                    mime="audio/mp3",
-                    use_container_width=True
-                )
-    
-    else:
-        st.info("""
-        **Para editar áudio:**
-        
-        1. **Faça upload de um áudio** na barra lateral
-        2. **Ou extraia áudio de um vídeo** na aba Upload
-        3. **Use as ferramentas** de edição disponíveis
-        
-        **Funcionalidades disponíveis:**
-        • 🔊 Ajuste de volume
-        • 🎚️ Efeitos de áudio
-        • 🗣️ Conversor texto-áudio
-        • 💾 Exportação do áudio editado
-        """)
-
-def render_ai_tab():
-    """Aba de IA e prompts - VERSÃO MODIFICADA para incluir narrativa"""
-    
-    if st.session_state.get("processing_ai", False):
-        st.info("🔄 Processando IA... Por favor, aguarde.")
-        st.stop()
-    
-    st.markdown("### 🤖 Inteligência Artificial Avançada")
-    
-    # Se houver um template narrativo ativo, mostrar uma mensagem
-    if st.session_state.narrative_template:
-        st.success(f"🎭 Template narrativo ativo: **{st.session_state.narrative_template.name}**. Os prompts podem ser gerados por ato na aba 'Estrutura Narrativa'.")
-    
-    tab1, tab2, tab3 = st.tabs(["🎯 Análise de Conteúdo", "🧠 Gerador de Prompts", "⚡ Sugestões de Aprimoramento"])
-    
-    with tab1:
-        st.markdown("#### 🎯 Análise Inteligente de Conteúdo")
-        
-        if st.session_state.video_path and st.session_state.transcribed_text:
-            if not st.session_state.video_analysis_complete:
-                col1, col2 = st.columns([2, 1])
-                with col1:
-                    if st.button("🔍 Analisar Conteúdo com IA Avançada", type="primary", use_container_width=True):
-                        st.session_state.analyzing_content = True
-                        with st.spinner("🤖 Analisando profundamente o conteúdo..."):
-                            analysis = analyze_video_content(
-                                st.session_state.video_path,
-                                st.session_state.transcribed_text
-                            )
-                            st.session_state.video_analysis = analysis
-                            st.session_state.video_analysis_complete = True
-                            st.session_state.analyzing_content = False
-                            st.success("✅ Análise avançada concluída!")
-                with col2:
-                    st.info("**Análise Avançada** inclui:\n• Sentimento do conteúdo\n• Público-alvo\n• Estrutura narrativa\n• Palavras-chave otimizadas")
-            
-            if st.session_state.video_analysis:
-                if st.session_state.get("analyzing_content", False):
-                    st.info("🔄 Concluindo análise...")
-                else:
-                    analysis = st.session_state.video_analysis
-                    
-                    st.markdown("##### 🎨 Temas e Categorias Identificadas")
-                    theme_cols = st.columns(min(4, len(analysis.themes)))
-                    for idx, theme in enumerate(analysis.themes[:4]):
-                        with theme_cols[idx]:
-                            theme_score = analysis.theme_scores.get(theme, 0)
-                            st.markdown(f"""
-                            <div style="background: linear-gradient(135deg, rgba(76,201,240,0.15), rgba(67,97,238,0.15)); 
-                                    padding: 1rem; border-radius: 10px; border-left: 4px solid #4cc9f0;">
-                                <h4 style="margin: 0; color: white;">{theme.title()}</h4>
-                                <small>Relevância: {theme_score}%</small>
-                            </div>
-                            """, unsafe_allow_html=True)
-                    
-                    st.markdown("##### ⭐ Momentos de Destaque")
-                    for moment in analysis.key_moments[:5]:
-                        with st.expander(f"🎬 Momento {moment.get('time', 0):.0f}s", expanded=False):
-                            col_m1, col_m2 = st.columns([3, 1])
-                            with col_m1:
-                                st.write(f"**Conteúdo:** {moment.get('text', '')}")
-                                if moment.get('importance', 0) > 70:
-                                    st.info("💡 **Momento de alto impacto**")
-                            with col_m2:
-                                st.metric("Impacto", f"{moment.get('importance', 0)}%")
-                    
-                    if analysis.target_audience:
-                        st.markdown("##### 👥 Perfil do Público-alvo")
-                        st.write(f"**Idade:** {analysis.target_audience.get('age_range', '18-45')}")
-                        st.write(f"**Interesses:** {', '.join(analysis.target_audience.get('interests', []))}")
-                        st.write(f"**Nível de Conhecimento:** {analysis.target_audience.get('knowledge_level', 'Iniciante/Intermediário')}")
-                    
-                    st.markdown("##### 😊 Análise de Sentimento")
-                    sentiment_cols = st.columns(3)
-                    with sentiment_cols[0]:
-                        st.metric("Positividade", f"{analysis.sentiment_scores.get('positive', 0)}%")
-                    with sentiment_cols[1]:
-                        st.metric("Neutralidade", f"{analysis.sentiment_scores.get('neutral', 0)}%")
-                    with sentiment_cols[2]:
-                        st.metric("Negatividade", f"{analysis.sentiment_scores.get('negative', 0)}%")
-        
-        else:
-            st.info("""
-            ### 🎬 Para uma análise completa:
-            
-            1. **Faça upload de um vídeo** na barra lateral
-            2. **Transcreva o áudio** automaticamente
-            3. **Clique em "Analisar Conteúdo"** para obter:
-               - 🎯 **Temas principais** identificados
-               - ⭐ **Momentos-chave** destacados
-               - 👥 **Público-alvo** sugerido
-               - 😊 **Análise de sentimento**
-               - 📊 **Métricas de engajamento**
-            
-            **Benefícios:**
-            • Entenda melhor seu conteúdo
-            • Identifique oportunidades de melhoria
-            • Otimize para seu público-alvo
-            • Crie conteúdo mais engajante
-            """)
-    
-    with tab2:
-        st.markdown("#### 🧠 Gerador de Prompts Avançados")
-        
-        if st.session_state.video_analysis:
-            analysis = st.session_state.video_analysis
-            
-            if analysis.themes:
-                st.markdown("##### 🎭 Contexto Baseado na Análise")
-                st.success(f"**Tema Principal:** {analysis.themes[0].title()} | **Público:** {analysis.target_audience.get('age_range', 'Adultos')} | **Tom:** {analysis.mood.title()}")
-                
-                prompt_type = st.selectbox(
-                    "🎯 Tipo de Conteúdo para Gerar",
-                    ['🎨 Imagem/Visual', '🔊 Áudio/Narração', '🎬 Vídeo/Edição', '📝 Texto/Roteiro', '📊 Storyboard', '🚀 Todos Integrados'],
-                    help="Selecione o tipo de conteúdo que deseja criar com IA",
-                    key="prompt_type_select_enhanced"
-                )
-                
-                with st.expander("⚙️ Configurações Avançadas do Prompt", expanded=True):
-                    col_style, col_tone = st.columns(2)
-                    with col_style:
-                        style = st.selectbox(
-                            "Estilo Visual/Narrativo",
-                            ['Realista', 'Cinematográfico', 'Animado', 'Minimalista', 'Futurista', 'Vintage', 'Profissional', 'Casual'],
-                            index=1
-                        )
-                    with col_tone:
-                        tone = st.selectbox(
-                            "Tom da Comunicação",
-                            ['Inspirador', 'Informativo', 'Persuasivo', 'Divertido', 'Emocional', 'Autoritário', 'Amigável', 'Urgente'],
-                            index=0
-                        )
-                    
-                    platform = st.multiselect(
-                        "📱 Plataformas de Destino",
-                        ['YouTube', 'TikTok/Reels', 'Instagram', 'LinkedIn', 'Twitter', 'Site/Blog', 'Apresentação', 'Curso Online'],
-                        default=['YouTube', 'TikTok/Reels']
-                    )
-                    
-                    complexity = st.slider(
-                        "📈 Nível de Detalhe/Complexidade",
-                        1, 5, 3,
-                        help="1 = Básico/Simples, 5 = Avançado/Detalhado"
-                    )
-                
-                if st.button("✨ Gerar Prompts Personalizados", type="primary", use_container_width=True, key="generate_enhanced_prompts"):
-                    st.session_state.processing_ai = True
-                    
-                    with st.spinner("🧠 Criando prompts otimizados..."):
-                        prompts = generate_enhanced_ai_prompts(
-                            analysis=analysis,
-                            prompt_type=prompt_type,
-                            style=style,
-                            tone=tone,
-                            platforms=platform,
-                            complexity_level=complexity
-                        )
-                        
-                        st.session_state.enhanced_prompts = prompts
-                        st.session_state.processing_ai = False
-                        
-                        st.success(f"✅ {len(prompts)} prompts gerados com sucesso!")
-                
-                if hasattr(st.session_state, 'enhanced_prompts') and st.session_state.enhanced_prompts:
-                    prompts = st.session_state.enhanced_prompts
-                    
-                    st.markdown("##### ✨ Prompts Gerados (Otimizados)")
-                    
-                    max_open_expanders = 3
-                    prompts_list = list(prompts.items())
-                    
-                    for idx, (prompt_name, prompt_data) in enumerate(prompts_list):
-                        initially_expanded = idx < max_open_expanders
-                        
-                        with st.expander(f"📋 {prompt_data.get('title', prompt_name.title())}", expanded=initially_expanded):
-                            st.markdown(f"**🎯 Objetivo:** {prompt_data.get('purpose', '')}")
-                            st.markdown(f"**📊 Nível:** {prompt_data.get('level', 'Intermediário')}")
-                            
-                            st.markdown("**💡 PROMPT PRINCIPAL:**")
-                            st.code(prompt_data['prompt'], language='text')
-                            
-                            if prompt_data.get('parameters'):
-                                st.markdown("**⚙️ Parâmetros Sugeridos:**")
-                                params = prompt_data['parameters']
-                                for param, value in params.items():
-                                    st.write(f"- **{param}:** {value}")
-                            
-                            if prompt_data.get('example'):
-                                with st.expander("📖 Exemplo de Uso", expanded=False):
-                                    st.write(prompt_data['example'])
-                            
-                            col_copy, col_save, col_test = st.columns(3)
-                            with col_copy:
-                                copy_key = f"copy_{prompt_name}_{st.session_state.get('copy_counter', 0)}"
-                                if st.button(f"📋 Copiar", key=copy_key):
-                                    st.success("Prompt copiado para área de transferência!")
-                            with col_save:
-                                save_key = f"save_{prompt_name}_{st.session_state.get('save_counter', 0)}"
-                                if st.button(f"💾 Salvar", key=save_key):
-                                    prompt_path = os.path.join(
-                                        st.session_state.working_dir,
-                                        f"prompt_avancado_{prompt_name}_{datetime.now().strftime('%H%M%S')}.txt"
-                                    )
-                                    with open(prompt_path, 'w', encoding='utf-8') as f:
-                                        f.write(json.dumps(prompt_data, ensure_ascii=False, indent=2))
-                                    st.success(f"Prompt salvo em: {prompt_path}")
-                            with col_test:
-                                test_key = f"test_{prompt_name}_{st.session_state.get('test_counter', 0)}"
-                                if st.button(f"🚀 Testar", key=test_key):
-                                    st.info("Funcionalidade de teste será implementada na próxima versão")
-            else:
-                st.warning("Não há temas identificados na análise. Faça uma análise completa primeiro.")
-    
-    with tab3:
-        if st.session_state.get("generating_suggestions", False):
-            st.info("🔄 Gerando sugestões...")
-        else:
-            st.markdown("#### ⚡ Sugestões Inteligentes de Aprimoramento")
-            
-            if st.session_state.video_analysis:
-                analysis = st.session_state.video_analysis
-                
-                st.markdown("##### 📊 Score de Qualidade do Conteúdo")
-                quality_score = calculate_content_quality_score(analysis)
-                
-                col_score, col_gauge = st.columns([2, 1])
-                with col_score:
-                    st.metric("Pontuação Geral", f"{quality_score}/100")
-                    st.progress(quality_score/100)
-                
-                with col_gauge:
-                    if quality_score >= 80:
-                        st.success("🎉 Excelente!")
-                    elif quality_score >= 60:
-                        st.info("👍 Bom")
-                    else:
-                        st.warning("💡 Pode melhorar")
-                
-                st.markdown("##### 📈 Análise por Categoria")
-                
-                categories = ['Conteúdo', 'Engajamento', 'Técnico', 'Narrativa']
-                cat_cols = st.columns(len(categories))
-                
-                for idx, category in enumerate(categories):
-                    with cat_cols[idx]:
-                        score = calculate_category_score(analysis, category)
-                        st.markdown(f"""
-                        <div style="text-align: center; padding: 1rem; background: rgba(255,255,255,0.05); border-radius: 10px;">
-                            <h4 style="margin: 0;">{category}</h4>
-                            <h2 style="margin: 0; color: #4cc9f0;">{score}%</h2>
-                        </div>
-                        """, unsafe_allow_html=True)
-                
-                st.markdown("##### 🚀 Sugestões Prioritárias de Melhoria")
-                
-                priority_suggestions = get_priority_suggestions(analysis)
-                
-                for i, suggestion in enumerate(priority_suggestions[:3]):
-                    initially_expanded = i < 2
-                    
-                    with st.expander(f"🔴 PRIORIDADE {i+1}: {suggestion['title']}", expanded=initially_expanded):
-                        st.markdown(f"**📝 Descrição:** {suggestion['description']}")
-                        
-                        col_imp, col_dif = st.columns(2)
-                        with col_imp:
-                            st.metric("Impacto", f"{suggestion['impact']}/10")
-                        with col_dif:
-                            st.metric("Dificuldade", f"{suggestion['difficulty']}/10")
-                        
-                        st.markdown("**🎯 Ações Recomendadas:**")
-                        for action in suggestion['actions']:
-                            st.write(f"• {action}")
-                        
-                        if suggestion.get('ai_prompt'):
-                            with st.expander("🤖 Prompt de IA para esta melhoria", expanded=False):
-                                st.code(suggestion['ai_prompt'], language='text')
-                
-                st.markdown("##### ⚡ Melhorias Rápidas (1-2 horas)")
-                
-                quick_improvements = get_quick_improvements(analysis)
-                
-                for improvement in quick_improvements[:3]:
-                    col_q1, col_q2 = st.columns([3, 1])
-                    with col_q1:
-                        st.markdown(f"**✅ {improvement['title']}**")
-                        st.caption(improvement['description'])
-                    with col_q2:
-                        apply_key = f"apply_{improvement['id']}_{st.session_state.get('improvement_counter', 0)}"
-                        if st.button(f"Aplicar", key=apply_key, use_container_width=True):
-                            st.success(f"Melhoria '{improvement['title']}' aplicada!")
-                
-                st.markdown("##### 📋 Plano de Ação Personalizado")
-                
-                selected_areas = st.multiselect(
-                    "🎯 Áreas para focar",
-                    ['Engajamento Inicial', 'Retenção de Audiência', 'Qualidade Visual', 'Áudio Profissional', 
-                     'Chamadas para Ação', 'Storytelling', 'Otimização SEO', 'Acessibilidade'],
-                    default=['Engajamento Inicial', 'Retenção de Audiência']
-                )
-                
-                if selected_areas and st.button("🎯 Gerar Plano de Ação Detalhado", type="primary", use_container_width=True):
-                    st.session_state.generating_suggestions = True
-                    with st.spinner("Gerando plano de ação..."):
-                        action_plan = generate_action_plan(analysis, selected_areas)
-                        st.session_state.generated_action_plan = action_plan
-                        st.session_state.generating_suggestions = False
-                        st.success("Plano de ação gerado!")
-                
-                if hasattr(st.session_state, 'generated_action_plan') and st.session_state.generated_action_plan:
-                    action_plan = st.session_state.generated_action_plan
-                    
-                    st.markdown("##### 📅 Plano de Implementação")
-                    
-                    for area, plan in action_plan.items():
-                        with st.expander(f"📌 {area}", expanded=True):
-                            st.markdown(f"**🎯 Objetivo:** {plan['objective']}")
-                            
-                            st.markdown("**📝 Tarefas:**")
-                            for task in plan['tasks']:
-                                status = "✅" if task.get('completed', False) else "⏳"
-                                st.write(f"{status} **{task['task']}** (Tempo: {task['time_estimate']})")
-                            
-                            st.markdown(f"**⏱️ Tempo Total Estimado:** {plan['total_time']}")
-                            
-                            checklist_key = f"checklist_{area}_{st.session_state.get('checklist_counter', 0)}"
-                            if st.button(f"📥 Baixar Checklist - {area}", key=checklist_key):
-                                st.success(f"Checklist para {area} pronto para download!")
-            
-            else:
-                st.info("""
-                ### ⚡ Para Sugestões Personalizadas:
-                
-                1. **Analise seu conteúdo** na primeira aba
-                2. **Receba avaliações** em tempo real
-                3. **Obtenha recomendações** específicas
-                
-                **O que você vai receber:**
-                
-                🚀 **Sugestões Prioritárias**
-                • Baseadas em análise de IA
-                • Ordenadas por impacto
-                • Com ações concretas
-                
-                ⚡ **Melhorias Rápidas**
-                • Implementação em 1-2 horas
-                • Alto impacto visual/auditivo
-                • Fáceis de aplicar
-                
-                📋 **Planos de Ação**
-                • Personalizados para seu conteúdo
-                • Com prazos realistas
-                • Checklists práticos
-                
-                🎯 **Pontuação de Qualidade**
-                • Avaliação objetiva
-                • Comparativos por categoria
-                • Metas de melhoria
-                """)
-
-def render_export_tab():
-    """Aba de exportação - MODIFICADA para incluir renderização por atos"""
-    st.markdown("### 💾 Exportação e Finalização")
-    
-    if st.session_state.video_parts or st.session_state.audio_path or st.session_state.narrative_template:
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("#### 🎥 Configurações de Vídeo")
-            
-            format_options = ['MP4', 'MOV', 'AVI', 'WMV', 'MKV']
-            export_format = st.selectbox("Formato", format_options, key="export_format")
-            
-            resolution_options = ['640x360', '854x480', '1280x720', '1920x1080', '3840x2160']
-            resolution = st.selectbox("Resolução", resolution_options, index=3, key="export_resolution")
-            
-            fps_options = [24, 25, 30, 50, 60]
-            fps = st.selectbox("FPS", fps_options, index=2, key="export_fps")
-            
-            quality = st.select_slider(
-                "Qualidade",
-                options=['Baixa', 'Média', 'Alta', 'Máxima'],
-                value='Alta',
-                key="export_quality"
-            )
-        
-        with col2:
-            st.markdown("#### 🔊 Configurações de Áudio")
-            
-            audio_bitrate = st.selectbox(
-                "Bitrate de Áudio",
-                ['64k', '128k', '192k', '256k', '320k'],
-                index=2,
-                key="audio_bitrate"
-            )
-            
-            audio_channels = st.radio("Canais", ['Mono', 'Estéreo'], index=1, key="audio_channels")
-            
-            st.markdown("#### 📦 O que exportar?")
-            
-            export_options = []
-            if st.session_state.video_parts:
-                export_options.append("Vídeo editado (partes)")
-            if st.session_state.audio_path:
-                export_options.append("Áudio editado")
-            if st.session_state.transcribed_text:
-                export_options.append("Texto transcrito")
-            if st.session_state.video_analysis:
-                export_options.append("Análise IA")
-            
-            # Opção narrativa
-            if st.session_state.narrative_template:
-                export_options.append("Vídeo narrativo (atos concatenados)")
-            
-            selected_exports = st.multiselect(
-                "Selecione os itens para exportar",
-                export_options,
-                default=export_options[:1] if export_options else [],
-                key="export_selections"
-            )
-        
-        st.markdown("#### 👁️ Pré-visualização")
-        
-        if "Vídeo editado (partes)" in selected_exports and st.session_state.video_parts:
-            first_part = st.session_state.video_parts[0]
-            if os.path.exists(first_part.output_path):
-                try:
-                    with open(first_part.output_path, 'rb') as f:
-                        video_bytes = f.read()
-                    st.video(video_bytes, format='video/mp4')
-                    st.caption(f"Pré-visualização: Parte 1 de {len(st.session_state.video_parts)}")
-                except:
-                    st.warning("Não foi possível carregar pré-visualização")
-        
-        st.markdown("---")
-        
-        export_button = st.button("🚀 EXPORTAR TUDO", type="primary", use_container_width=True, key="export_all_button")
-        
-        if export_button:
-            with st.spinner("Preparando exportação..."):
-                export_dir = os.path.join(st.session_state.working_dir, "export")
-                os.makedirs(export_dir, exist_ok=True)
-                
-                exported_files = []
-                
-                # Exporta vídeo por partes
-                if "Vídeo editado (partes)" in selected_exports and st.session_state.video_parts:
-                    try:
-                        list_file = os.path.join(export_dir, "concat_list.txt")
-                        
-                        valid_parts = [p for p in st.session_state.video_parts if os.path.exists(p.output_path)]
-                        
-                        if valid_parts:
-                            with open(list_file, 'w', encoding='utf-8') as f:
-                                for part in valid_parts:
-                                    f.write(f"file '{os.path.abspath(part.output_path)}'\n")
-                            
-                            output_video = os.path.join(export_dir, f"{st.session_state.project_name}.{export_format.lower()}")
-                            
-                            bitrate_map = {
-                                'Baixa': '1000k',
-                                'Média': '2500k',
-                                'Alta': '5000k',
-                                'Máxima': '8000k'
-                            }
-                            video_bitrate = bitrate_map.get(quality, '5000k')
-                            
-                            cmd = [
-                                'ffmpeg', '-f', 'concat', '-safe', '0',
-                                '-i', list_file,
-                                '-c:v', 'libx264',
-                                '-s', resolution,
-                                '-r', str(fps),
-                                '-b:v', video_bitrate,
-                                '-c:a', 'aac',
-                                '-b:a', audio_bitrate,
-                                '-ar', '44100',
-                                '-ac', '2' if audio_channels == 'Estéreo' else '1',
-                                '-preset', 'medium',
-                                output_video, '-y'
-                            ]
-                            
-                            progress_text = st.empty()
-                            progress_bar = st.progress(0)
-                            progress_text.text("Exportando vídeo...")
-                            
-                            try:
-                                process = subprocess.run(cmd, capture_output=True, text=True)
-                                if process.returncode == 0:
-                                    exported_files.append(output_video)
-                                    progress_bar.progress(1.0)
-                                    progress_text.text("Vídeo exportado com sucesso!")
-                                else:
-                                    st.error(f"Erro ao exportar vídeo: {process.stderr[:200]}")
-                            except Exception as e:
-                                st.error(f"Erro: {str(e)}")
-                        else:
-                            st.warning("Nenhuma parte válida para exportar")
-                    except Exception as e:
-                        st.error(f"Erro ao processar vídeo: {str(e)}")
-                
-                # Exporta vídeo narrativo (atos concatenados)
-                if "Vídeo narrativo (atos concatenados)" in selected_exports and st.session_state.narrative_template:
-                    template = st.session_state.narrative_template
-                    videos_to_concat = []
-                    
-                    # Verifica se cada ato tem um vídeo associado
-                    for act in template.acts:
-                        if hasattr(act, 'video_path') and act.video_path and os.path.exists(act.video_path):
-                            videos_to_concat.append(act.video_path)
-                        else:
-                            st.warning(f"Ato {act.number} não possui vídeo gerado. Ignorando.")
-                    
-                    if videos_to_concat:
-                        list_file = os.path.join(export_dir, "concat_narrative.txt")
-                        with open(list_file, 'w', encoding='utf-8') as f:
-                            for v in videos_to_concat:
-                                f.write(f"file '{os.path.abspath(v)}'\n")
-                        
-                        output_narrative = os.path.join(export_dir, f"{st.session_state.project_name}_narrative.mp4")
-                        cmd = ['ffmpeg', '-f', 'concat', '-safe', '0', '-i', list_file, '-c', 'copy', output_narrative, '-y']
-                        try:
-                            subprocess.run(cmd, capture_output=True, check=True)
-                            exported_files.append(output_narrative)
-                            st.success("Vídeo narrativo gerado!")
-                        except Exception as e:
-                            st.error(f"Erro ao concatenar atos: {str(e)}")
-                    else:
-                        st.warning("Nenhum vídeo de ato encontrado para exportar o vídeo narrativo.")
-                
-                # Exporta áudio
-                if "Áudio editado" in selected_exports and st.session_state.audio_path and os.path.exists(st.session_state.audio_path):
-                    try:
-                        output_audio = os.path.join(export_dir, f"{st.session_state.project_name}_audio.mp3")
-                        shutil.copy2(st.session_state.audio_path, output_audio)
-                        exported_files.append(output_audio)
-                        st.success("Áudio exportado!")
-                    except Exception as e:
-                        st.error(f"Erro ao exportar áudio: {str(e)}")
-                
-                # Exporta texto
-                if "Texto transcrito" in selected_exports and st.session_state.transcribed_text:
-                    try:
-                        output_text = os.path.join(export_dir, f"{st.session_state.project_name}_transcricao.txt")
-                        with open(output_text, 'w', encoding='utf-8') as f:
-                            f.write(st.session_state.transcribed_text)
-                        exported_files.append(output_text)
-                        st.success("Texto exportado!")
-                    except Exception as e:
-                        st.error(f"Erro ao exportar texto: {str(e)}")
-                
-                # Exporta análise IA
-                if "Análise IA" in selected_exports and st.session_state.video_analysis:
-                    try:
-                        output_analysis = os.path.join(export_dir, f"{st.session_state.project_name}_analise_ia.json")
-                        with open(output_analysis, 'w', encoding='utf-8') as f:
-                            json.dump(asdict(st.session_state.video_analysis), f, ensure_ascii=False, indent=2)
-                        exported_files.append(output_analysis)
-                        st.success("Análise IA exportada!")
-                    except Exception as e:
-                        st.error(f"Erro ao exportar análise: {str(e)}")
-                
-                if exported_files:
-                    st.success(f"✅ Exportação concluída! {len(exported_files)} arquivos exportados.")
-                    
-                    for file in exported_files:
-                        if os.path.exists(file):
-                            file_name = os.path.basename(file)
-                            file_size = os.path.getsize(file) / (1024 * 1024)
-                            
-                            with open(file, 'rb') as f:
-                                file_data = f.read()
-                            
-                            if file.endswith('.mp4') or file.endswith('.avi') or file.endswith('.mov'):
-                                mime_type = "video/mp4"
-                            elif file.endswith('.mp3'):
-                                mime_type = "audio/mp3"
-                            elif file.endswith('.txt'):
-                                mime_type = "text/plain"
-                            elif file.endswith('.json'):
-                                mime_type = "application/json"
-                            else:
-                                mime_type = "application/octet-stream"
-                            
-                            st.download_button(
-                                label=f"⬇️ Baixar {file_name} ({file_size:.1f} MB)",
-                                data=file_data,
-                                file_name=file_name,
-                                mime=mime_type,
-                                key=f"download_{file_name}_{uuid.uuid4().hex[:8]}"
-                            )
-                else:
-                    st.error("Nenhum arquivo foi exportado.")
-    
-    else:
-        st.info("""
-        **Para exportar seu trabalho:**
-        
-        1. **Edite um vídeo ou áudio** nas abas anteriores
-        2. **Configure as opções** de exportação acima
-        3. **Selecione** o que deseja exportar
-        4. **Clique em EXPORTAR TUDO**
-        
-        **Formatos suportados:**
-        • 🎥 Vídeo: MP4, MOV, AVI, WMV, MKV
-        • 🔊 Áudio: MP3
-        • 📝 Texto: TXT
-        • 🧠 Análise: JSON
-        """)
-
-def render_text_to_video_tab():
-    st.markdown("### 📝 Criar Vídeo a partir de Texto")
-    
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        st.markdown("#### ✍️ Escreva o texto do vídeo")
-        text_input = st.text_area(
-            "Texto para narração",
-            value=st.session_state.get('tts_text', ''),
-            height=200,
-            placeholder="Digite aqui o texto que será transformado em áudio e vídeo...",
-            key="text_to_video_input"
-        )
-        
-        if text_input:
-            st.session_state.tts_text = text_input
-            
-            st.markdown("#### 🎤 Configurações de Voz")
-            voice_options = list(DEFAULT_VOICE_PROFILES.keys())
-            selected_voice = st.selectbox(
-                "Voz",
-                voice_options,
-                format_func=lambda x: DEFAULT_VOICE_PROFILES[x].name,
-                key="ttv_voice"
-            )
-            
-            col_speed, col_pitch, col_vol = st.columns(3)
-            with col_speed:
-                speed = st.slider("Velocidade", 0.5, 2.0, 1.0, 0.1, key="ttv_speed")
-            with col_pitch:
-                pitch = st.slider("Tom", 0.5, 2.0, 1.0, 0.1, key="ttv_pitch")
-            with col_vol:
-                volume = st.slider("Volume", 0.0, 2.0, 1.0, 0.1, key="ttv_volume")
-            
-            st.markdown("#### 🖼️ Background do Vídeo")
-            bg_option = st.radio(
-                "Tipo de fundo",
-                ["Cor sólida", "Imagem", "Vídeo"],
-                horizontal=True,
-                key="bg_type"
-            )
-            
-            bg_color = "#000000"
-            bg_file = None
-            if bg_option == "Cor sólida":
-                bg_color = st.color_picker("Cor de fundo", "#000000", key="bg_color")
-            else:
-                uploaded_bg = st.file_uploader(
-                    f"Selecione um arquivo de {bg_option.lower()}",
-                    type=['jpg', 'jpeg', 'png', 'mp4'] if bg_option == "Imagem" else ['mp4', 'mov', 'avi'],
-                    key=f"bg_upload_{bg_option}"
-                )
-                if uploaded_bg:
-                    bg_ext = "jpg" if bg_option == "Imagem" else "mp4"
-                    bg_path = os.path.join(st.session_state.working_dir, f"bg_{uuid.uuid4().hex[:8]}.{bg_ext}")
-                    with open(bg_path, 'wb') as f:
-                        f.write(uploaded_bg.getvalue())
-                    bg_file = bg_path
-            
-            st.markdown("#### ⚙️ Configurações de Vídeo")
-            col_res, col_fps = st.columns(2)
-            with col_res:
-                resolution = st.selectbox(
-                    "Resolução",
-                    ['640x360', '854x480', '1280x720', '1920x1080'],
-                    index=2,
-                    key="ttv_res"
-                )
-            with col_fps:
-                fps = st.selectbox("FPS", [24, 25, 30], index=1, key="ttv_fps")
-            
-            if st.button("🎬 GERAR VÍDEO", type="primary", use_container_width=True):
-                if not text_input.strip():
-                    st.warning("Digite algum texto.")
-                else:
-                    with st.spinner("Gerando áudio e vídeo..."):
-                        voice_profile = DEFAULT_VOICE_PROFILES[selected_voice]
-                        voice_profile.speed = speed
-                        voice_profile.pitch = pitch
-                        voice_profile.volume = volume
-                        
-                        success, audio_result = text_to_speech_edge(text_input, voice_profile)
-                        if not success:
-                            st.error(f"Falha na geração de áudio: {audio_result}")
-                            st.stop()
-                        
-                        audio_path = audio_result
-                        
-                        audio_info = get_media_info(audio_path, 'audio')
-                        audio_duration = audio_info.get('duration', 5)
-                        
-                        output_video = os.path.join(
-                            st.session_state.working_dir,
-                            f"text_to_video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
-                        )
-                        
-                        if create_video_from_text(
-                            audio_path=audio_path,
-                            output_path=output_video,
-                            duration=audio_duration,
-                            bg_type=bg_option.lower(),
-                            bg_color=bg_color,
-                            bg_file=bg_file,
-                            resolution=resolution,
-                            fps=fps
-                        ):
-                            st.session_state.generated_video = output_video
-                            st.success("✅ Vídeo gerado com sucesso!")
-                        else:
-                            st.error("Erro ao criar o vídeo.")
-    
-    with col2:
-        st.markdown("#### 🎬 Pré‑visualização")
-        if 'generated_video' in st.session_state and os.path.exists(st.session_state.generated_video):
-            try:
-                with open(st.session_state.generated_video, 'rb') as f:
-                    video_data = f.read()
-                st.video(video_data)
-                
-                st.download_button(
-                    label="💾 Baixar Vídeo",
-                    data=video_data,
-                    file_name=f"texto_video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4",
-                    mime="video/mp4",
-                    use_container_width=True
-                )
-            except Exception as e:
-                st.warning(f"Erro ao carregar vídeo: {e}")
-        else:
-            st.info("Após gerar, o vídeo aparecerá aqui.")
-
-def render_upload_tab():
-    st.markdown("### 📤 Upload e Visualização")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("#### 🎥 Visualizador de Vídeo")
-        
-        if st.session_state.video_path and os.path.exists(st.session_state.video_path):
-            info = st.session_state.video_info
-            if info:
-                col_info1, col_info2 = st.columns(2)
-                with col_info1:
-                    st.metric("Duração", f"{info.get('duration', 0):.1f}s")
-                    st.metric("Resolução", info.get('resolution', 'Desconhecida'))
-                with col_info2:
-                    st.metric("Tamanho", f"{info.get('size_mb', 0):.1f} MB")
-                    st.metric("Formato", info.get('format', 'Desconhecido'))
-            
-            try:
-                with open(st.session_state.video_path, 'rb') as f:
-                    video_bytes = f.read()
-                st.video(video_bytes, format='video/mp4')
-            except Exception as e:
-                st.warning(f"Não foi possível carregar o vídeo: {str(e)}")
-            
-            col_actions1, col_actions2 = st.columns(2)
-            with col_actions1:
-                if st.button("🎵 Extrair Áudio do Vídeo", use_container_width=True, key="extract_audio_button"):
-                    with st.spinner("Extraindo áudio..."):
-                        audio_path = extract_audio_from_video(st.session_state.video_path)
-                        if audio_path:
-                            st.session_state.audio_path = audio_path
-                            st.session_state.audio_info = get_media_info(audio_path, 'audio')
-                            st.success("Áudio extraído com sucesso!")
-                            st.rerun()
-                        else:
-                            st.error("Falha ao extrair áudio")
-            with col_actions2:
-                if st.button("🔪 Dividir em Partes", use_container_width=True, key="split_button_upload"):
-                    with st.spinner("Dividindo vídeo..."):
-                        parts = split_video_into_parts(st.session_state.video_path, 60)
-                        if parts:
-                            st.session_state.video_parts = parts
-                            st.session_state.is_partitioned = True
-                            st.success(f"Vídeo dividido em {len(parts)} partes!")
-                            st.rerun()
-        
-        else:
-            st.info("Faça upload de um vídeo na barra lateral")
-    
-    with col2:
-        st.markdown("#### 🔊 Visualizador de Áudio")
-        
-        if st.session_state.audio_path and os.path.exists(st.session_state.audio_path):
-            info = st.session_state.audio_info
-            if info:
-                col_info1, col_info2 = st.columns(2)
-                with col_info1:
-                    st.metric("Duração", f"{info.get('duration', 0):.1f}s")
-                    st.metric("Taxa de Bits", f"{info.get('bitrate', '0')[:4]} kbps")
-                with col_info2:
-                    st.metric("Tamanho", f"{info.get('size_mb', 0):.1f} MB")
-                    st.metric("Taxa de Amostragem", f"{info.get('sample_rate', '0')[:4]} Hz")
-            
-            try:
-                with open(st.session_state.audio_path, 'rb') as f:
-                    audio_bytes = f.read()
-                st.audio(audio_bytes, format='audio/mp3')
-            except:
-                st.warning("Não foi possível carregar o áudio")
-            
-            if st.button("📝 Transcrever Áudio com IA", type="primary", use_container_width=True, key="transcribe_button"):
-                with st.spinner("Transcrevendo com Whisper..."):
-                    text = transcribe_audio_with_whisper(st.session_state.audio_path)
-                    st.session_state.transcribed_text = text
-                    
-                    if info and 'duration' in info:
-                        segments = segment_text_by_time(text, info['duration'])
-                        st.session_state.text_segments = segments
-                    
-                    st.success("Transcrição concluída!")
-                    st.rerun()
-        
-        else:
-            st.info("Faça upload de um áudio ou extraia do vídeo")
-
-# ==========================
-# FUNÇÃO DE SEGMENTAÇÃO ROBUSTA
-# ==========================
-def extract_segments_from_conversation(text: str) -> List[Dict]:
+def apply_filters(image: Image.Image, cfg: Dict) -> Image.Image:
     """
-    Extrai segmentos de um texto de conversa/roteiro.
-    Agrupa por parágrafos (linhas em branco) e reconhece títulos.
-    Retorna lista de dicionários com 'title', 'text', 'scene_desc', 'time_start', 'time_end'.
+    Aplica todos os filtros selecionados à imagem.
+    Retorna SEMPRE uma imagem RGB.
     """
-    lines = text.split('\n')
-    segments = []
-    current_title = ""
-    current_text = []
-    current_scene = ""
-    time_pattern = re.compile(r'\((\d+):(\d+)\s*[–\-]\s*(\d+):(\d+)\)')
+    # Garante que a entrada seja RGB
+    img = image.convert("RGB")
+    
+    # ---- P&B ----
+    if "P&B" in cfg:
+        p = cfg["P&B"]
+        img = ImageOps.grayscale(img).convert("RGB")
+        img = ImageEnhance.Contrast(img).enhance(p.get("contraste", 1.2))
+        if p.get("textura", 0) > 0:
+            arr = np.array(img, dtype=np.float32)
+            arr = np.clip(arr + np.random.normal(0, p["textura"] * 7, arr.shape), 0, 255)
+            img = Image.fromarray(arr.astype(np.uint8))
 
-    title_patterns = [
-        r'^##\s*(.+)',           # Título markdown nível 2
-        r'^###\s*(.+)',          # Título markdown nível 3
-        r'^PARTE\s*(\d+)',       # "PARTE 1"
-        r'^Cena\s*(\d+)',        # "Cena 1"
-        r'^\[(.*?)\]',           # [Título entre colchetes]
-        r'^\*\*(.+?)\*\*',       # **Título em negrito**
-        r'^📍?\s*(.+)',           # Título com emoji de localização
-    ]
+    # ---- Vintage ----
+    if "Vintage" in cfg:
+        p = cfg["Vintage"]
+        arr = np.array(img, dtype=np.float32) / 255.0
+        fac = p.get("intensidade", 70) / 100.0
+        sm = np.array([[.393, .769, .189],
+                       [.349, .686, .168],
+                       [.272, .534, .131]])
+        sepia = np.dot(arr, sm.T)
+        arr = np.clip(arr * (1 - fac) + sepia * fac, 0, 1)
+        vig = p.get("vinheta", 40)
+        if vig > 0:
+            h, w = arr.shape[:2]
+            X, Y = np.meshgrid(np.linspace(-1, 1, w), np.linspace(-1, 1, h))
+            mask = np.clip(1 - np.sqrt(X**2 + Y**2) * (vig / 100 * 1.5), 0, 1)[:, :, None]
+            arr *= mask
+        gr = p.get("granulacao", 10)
+        if gr > 0:
+            noise = np.random.randint(-gr, gr, arr.shape[:2] + (3,), dtype=np.int16)
+            arr = np.clip((arr * 255 + noise), 0, 255) / 255.0
+        img = Image.fromarray((arr * 255).astype(np.uint8))
 
-    i = 0
-    while i < len(lines):
-        line = lines[i].rstrip()
-        line_stripped = line.strip()
+    # ---- Azulado ----
+    if "Azulado" in cfg:
+        p = cfg["Azulado"]
+        tint = Image.new("RGB", img.size, (135, 206, 250))
+        img = Image.blend(img, tint, p.get("intensidade", 50) / 200)
+        img = ImageEnhance.Brightness(img).enhance(1 + p.get("brilho", 0) / 100)
 
-        # Linha em branco indica fim de parágrafo – fecha segmento atual
-        if not line_stripped and current_text:
-            segments.append({
-                'title': current_title,
-                'text': '\n'.join(current_text).strip(),
-                'scene_desc': current_scene,
-                'time_start': None,
-                'time_end': None
-            })
-            current_title = ""
-            current_text = []
-            current_scene = ""
-            i += 1
-            continue
+    # ---- Esverdeado ----
+    if "Esverdeado" in cfg:
+        p = cfg["Esverdeado"]
+        tint = Image.new("RGB", img.size, (144, 238, 144))
+        img = Image.blend(img, tint, p.get("intensidade", 50) / 200)
+        img = ImageEnhance.Contrast(img).enhance(p.get("contraste", 1.1))
 
-        if line_stripped:
-            # Verifica se é título
-            title_match = None
-            for pat in title_patterns:
-                m = re.match(pat, line_stripped)
-                if m:
-                    title_match = m.group(1).strip()
-                    break
-            if title_match:
-                # Salva segmento anterior
-                if current_title or current_text:
-                    segments.append({
-                        'title': current_title,
-                        'text': '\n'.join(current_text).strip(),
-                        'scene_desc': current_scene,
-                        'time_start': None,
-                        'time_end': None
-                    })
-                current_title = title_match
-                current_text = []
-                current_scene = ""
-                i += 1
-                continue
+    # ---- Futurístico (CORRIGIDO) ----
+    if "Futurístico" in cfg:
+        p = cfg["Futurístico"]
+        arr = np.array(img, dtype=np.float32)
+        gv = p.get("glow", 30)
+        if gv > 0:
+            bl = cv2.GaussianBlur(arr, (0, 0), gv / 10)
+            arr = cv2.addWeighted(arr, 1, bl, gv / 100, 0)
+        nv = p.get("neon", 20)
+        if nv > 0:
+            # CORREÇÃO: Laplacian em imagem colorida sem conversões desnecessárias
+            edges = cv2.Laplacian(arr, cv2.CV_32F, ksize=3)
+            # Amplifica bordas e aplica cor neon (magenta)
+            colored = np.abs(edges) * np.array([1, 0, 1], dtype=np.float32)
+            arr = cv2.addWeighted(arr, 1, colored, nv / 100, 0)
+        sv = p.get("scanlines", 0)
+        if sv > 0:
+            for y in range(0, int(arr.shape[0]), 2):
+                arr[y:y+1, :] *= (1 - sv / 100)
+        img = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
 
-            # Verifica se é descrição de cena (ex: "Cena: ...")
-            if line_stripped.lower().startswith('cena:') or line_stripped.lower().startswith('**cena:**'):
-                current_scene = line_stripped.split(':', 1)[-1].strip()
-            else:
-                # Adiciona linha ao texto atual
-                current_text.append(line)
-        i += 1
+    # ---- Realça Cores ----
+    if "Realça Cores" in cfg:
+        img = ImageEnhance.Color(img).enhance(cfg["Realça Cores"].get("intensidade", 1.5))
 
-    # Último segmento
-    if current_title or current_text:
-        segments.append({
-            'title': current_title,
-            'text': '\n'.join(current_text).strip(),
-            'scene_desc': current_scene,
-            'time_start': None,
-            'time_end': None
-        })
+    # ---- Infravermelho ----
+    if "Infravermelho" in cfg:
+        arr = np.array(img, dtype=np.float32)
+        fac = 1 + cfg["Infravermelho"].get("intensidade", 50) / 100
+        r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
+        arr[:, :, 0] = np.clip(r * fac + g * 0.2, 0, 255)
+        arr[:, :, 1] = np.clip(g * 0.5, 0, 255)
+        arr[:, :, 2] = np.clip(b * 0.3, 0, 255)
+        img = Image.fromarray(arr.astype(np.uint8))
 
-    # Extrai tempos se houver no texto
+    # ---- Glitch ----
+    if "Glitch" in cfg:
+        intens = int(cfg["Glitch"].get("intensidade", 5))
+        arr = np.array(img)
+        for _ in range(intens):
+            y = random.randint(0, img.height - 1)
+            shift = random.randint(-intens * 3, intens * 3)
+            if shift:
+                arr[y, :] = np.roll(arr[y, :], shift, axis=0)
+        img = Image.fromarray(arr)
+
+    # ---- Vaporwave ----
+    if "Vaporwave" in cfg:
+        arr = np.array(img, dtype=np.float32)
+        fac = cfg["Vaporwave"].get("intensidade", 80) / 100
+        arr[:, :, 0] = np.clip(arr[:, :, 0] * (1 + fac * 0.3), 0, 255)
+        arr[:, :, 2] = np.clip(arr[:, :, 2] * (1 + fac * 0.4), 0, 255)
+        img = Image.fromarray(arr.astype(np.uint8))
+        img = ImageEnhance.Color(img).enhance(1 + fac * 0.5)
+
+    # ---- HDR ----
+    if "HDR" in cfg:
+        fac = cfg["HDR"].get("intensidade", 60) / 100
+        img = ImageEnhance.Contrast(img).enhance(1 + fac * 0.5)
+        img = ImageEnhance.Color(img).enhance(1 + fac * 0.4)
+        img = ImageEnhance.Sharpness(img).enhance(1 + fac * 0.3)
+
+    # ---- Cinemático ----
+    if "Cinemático" in cfg:
+        p = cfg["Cinemático"]
+        fac = p.get("intensidade", 60) / 100
+        arr = np.array(img, dtype=np.float32)
+        arr[:, :, 0] = np.clip(arr[:, :, 0] + fac * 30, 0, 255)
+        arr[:, :, 2] = np.clip(arr[:, :, 2] - fac * 20, 0, 255)
+        img = Image.fromarray(arr.astype(np.uint8))
+        img = ImageEnhance.Contrast(img).enhance(p.get("contraste", 1.1))
+
+    # ---- Quente ----
+    if "Quente" in cfg:
+        fac = cfg["Quente"].get("intensidade", 60) / 100
+        arr = np.array(img, dtype=np.float32)
+        arr[:, :, 0] = np.clip(arr[:, :, 0] * (1 + fac * 0.3), 0, 255)
+        arr[:, :, 2] = np.clip(arr[:, :, 2] * (1 - fac * 0.2), 0, 255)
+        img = Image.fromarray(arr.astype(np.uint8))
+
+    # ---- Frio ----
+    if "Frio" in cfg:
+        fac = cfg["Frio"].get("intensidade", 60) / 100
+        arr = np.array(img, dtype=np.float32)
+        arr[:, :, 2] = np.clip(arr[:, :, 2] * (1 + fac * 0.35), 0, 255)
+        arr[:, :, 0] = np.clip(arr[:, :, 0] * (1 - fac * 0.2), 0, 255)
+        img = Image.fromarray(arr.astype(np.uint8))
+
+    # Garante que a saída seja RGB (remove canal alpha se existir)
+    return img.convert("RGB")
+
+def apply_frame(image: Image.Image, cfg: Dict) -> Image.Image:
+    """
+    Aplica moldura decorativa à imagem.
+    Retorna SEMPRE uma imagem RGB.
+    """
+    ft = cfg.get("tipo", "Nenhuma")
+    if ft == "Nenhuma":
+        return image.convert("RGB")
+
+    # Trabalha em RGBA para permitir transparências
+    img = image.convert("RGBA")
+    w, h = img.size
+    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+
+    col = cfg.get("cor", "#FFFFFF")
+    thickness = max(1, cfg.get("espessura", 10))
+
+    if ft == "Neon":
+        for i in range(thickness, 0, -1):
+            alpha = int(255 * (i / thickness) ** 0.5)
+            neon_color = (*ImageColor.getrgb(col), alpha)
+            draw.rectangle([(i, i), (w - i, h - i)], outline=neon_color, width=1)
+
+    elif ft == "Janela":
+        draw.rectangle([(0, 0), (w - 1, h - 1)], outline=col, width=thickness)
+        draw.line([(w // 2, 0), (w // 2, h)], fill=col, width=max(1, thickness // 2))
+        draw.line([(0, h // 2), (w, h // 2)], fill=col, width=max(1, thickness // 2))
+
+    elif ft == "Câmera":
+        draw.rectangle([(thickness//2, thickness//2), (w - thickness//2, h - thickness//2)],
+                       outline=col, width=thickness)
+        draw.rectangle([(0, h - thickness * 3), (w, h)], fill=col)
+
+    elif ft == "Smartphone":
+        r = min(w, h) // 8
+        draw.rounded_rectangle([(thickness//2, thickness//2), (w - thickness//2, h - thickness//2)],
+                               radius=r, outline=col, width=thickness)
+        nw, nh = w // 5, thickness * 2
+        draw.rectangle([(w//2 - nw//2, 0), (w//2 + nw//2, nh)], fill=col)
+
+    elif ft == "Portal":
+        cx, cy = w // 2, h // 2
+        rad = min(w, h) // 2 - thickness
+        for i in range(thickness, 0, -1):
+            alpha = int(255 * (i / thickness) ** 0.5)
+            portal_color = (*ImageColor.getrgb(col), alpha)
+            draw.ellipse([(cx - rad - i, cy - rad - i),
+                          (cx + rad + i, cy + rad + i)],
+                         outline=portal_color, width=1)
+
+    elif ft == "Lupa":
+        cx, cy = w // 2, h // 2
+        rad = min(w, h) // 2 - thickness
+        draw.ellipse([(cx - rad, cy - rad), (cx + rad, cy + rad)], outline=col, width=thickness)
+        handle_len = h // 3
+        draw.rectangle([(cx - thickness, cy + rad), (cx + thickness, cy + rad + handle_len)], fill=col)
+
+    elif ft == "Cinemascope":
+        bar_h = int(h * 0.108)
+        draw.rectangle([(0, 0), (w, bar_h)], fill=col)
+        draw.rectangle([(0, h - bar_h), (w, h)], fill=col)
+
+    elif ft == "Dupla":
+        draw.rectangle([(0, 0), (w - 1, h - 1)], outline=col, width=thickness)
+        inner = thickness * 3
+        draw.rectangle([(inner, inner), (w - inner, h - inner)],
+                       outline=col, width=max(1, thickness // 2))
+
+    elif ft == "Glitch":
+        for i in range(0, thickness * 2, 2):
+            offset = random.randint(-4, 4)
+            alpha = int(200 * (1 - i / (thickness * 2 + 1)))
+            glitch_color = (*ImageColor.getrgb(col), alpha)
+            draw.rectangle([(i + offset, i), (w - i + offset, h - i)],
+                           outline=glitch_color, width=1)
+
+    # Combina a moldura com a imagem original
+    result = Image.alpha_composite(img, overlay)
+    # Converte para RGB (remove transparência) para compatibilidade com vídeo
+    return result.convert("RGB")
+
+def apply_text(image: Image.Image, cfg: Dict) -> Image.Image:
+    texto = cfg.get("texto","")
+    if not texto: return image
+    img = image.copy().convert("RGBA")
+    draw = ImageDraw.Draw(img)
+    try:
+        font = ImageFont.load_default()
+    except:
+        font = None
+    cor = cfg.get("fonte",{}).get("cor","#FFFFFF")
+    pos = cfg.get("posicao",{})
+    try:
+        bbox = draw.textbbox((0,0), texto, font=font)
+        tw, th_ = bbox[2]-bbox[0], bbox[3]-bbox[1]
+    except:
+        tw, th_ = len(texto)*8, 16
+    hmap = {"Esquerda":20,"Centro":(img.width-tw)//2,"Direita":img.width-tw-20}
+    vmap = {"Topo":20,"Meio":(img.height-th_)//2,"Base":img.height-th_-20}
+    x = hmap.get(pos.get("horizontal","Centro"), (img.width-tw)//2)
+    y = vmap.get(pos.get("vertical","Base"), img.height-th_-20)
+    ctr = cfg.get("contorno",{})
+    if ctr.get("ativo"):
+        cw = ctr.get("espessura",2)
+        cc = ctr.get("cor","#000000")
+        for dx in range(-cw, cw+1):
+            for dy in range(-cw, cw+1):
+                if dx or dy:
+                    draw.text((x+dx,y+dy), texto, fill=cc, font=font)
+    draw.text((x,y), texto, fill=cor, font=font)
+    return img
+
+# ==============================================================================
+# VÍDEO: CARREGAMENTO E OPERAÇÕES
+# ==============================================================================
+def load_video(uploaded_file) -> Tuple[Optional[Any], Optional[str]]:
+    if not VIDEO_SUPPORT: return None, None
+    try:
+        suffix = "." + uploaded_file.name.split(".")[-1].lower()
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix,
+                                          dir=st.session_state.working_dir)
+        tmp.write(uploaded_file.read())
+        tmp.close()
+        clip = VideoFileClip(tmp.name)
+        if clip.duration > 120:  # Limite de 2 minutos para não travar
+            clip = clip.subclip(0, 120)
+        return clip, tmp.name
+    except Exception as e:
+        st.error(f"Erro ao carregar vídeo: {e}")
+        return None, None
+
+def extract_frame(clip, t: float) -> Optional[Image.Image]:
+    try:
+        t = max(0.0, min(t, clip.duration - 0.01))
+        frame = clip.get_frame(t)
+        return Image.fromarray(frame.astype(np.uint8))
+    except Exception:
+        return None
+
+def clip_subclip(clip, start: float, end: float):
+    try:
+        return clip.subclipped(start, end)
+    except AttributeError:
+        return clip.subclip(start, end)
+
+def clip_fl_image(clip, fn):
+    try:
+        return clip.image_transform(fn)
+    except AttributeError:
+        return clip.fl_image(fn)
+
+def export_clip(clip, fps=24) -> Optional[bytes]:
+    if not VIDEO_SUPPORT or clip is None: return None
+    try:
+        out = os.path.join(st.session_state.working_dir, f"exp_{uuid.uuid4().hex[:8]}.mp4")
+        # Parâmetros para alta qualidade
+        clip.write_videofile(
+            out,
+            codec="libx264",
+            fps=fps,
+            bitrate="8000k",          # Taxa de bits alta (ajuste conforme necessário)
+            preset="medium",          # Equilíbrio entre qualidade e velocidade
+            audio_codec="aac",
+            audio_bitrate="192k",
+            logger=None,
+            temp_audiofile=None
+        )
+        with open(out, "rb") as f:
+            data = f.read()
+        try: os.unlink(out)
+        except: pass
+        return data
+    except Exception as e:
+        st.error(f"Erro ao exportar: {e}")
+        return None
+    
+def apply_animation_to_frame(img_array, anim_name, params, progress):
+    """Aplica um efeito de animação a um frame (numpy array) baseado no progresso (0 a 1)."""
+    img = Image.fromarray(img_array.astype(np.uint8)).convert("RGBA")
+    orig_size = img.size
+
+    if anim_name == "Girar":
+        angle = 360 * progress
+        img = img.rotate(angle, resample=Image.BILINEAR, expand=False)
+    elif anim_name == "Zoom":
+        scale = 1 + 0.35 * math.sin(progress * math.pi * 2)
+        nw, nh = int(orig_size[0]*scale), int(orig_size[1]*scale)
+        img = img.resize((nw, nh), Image.LANCZOS)
+        dx, dy = (nw - orig_size[0])//2, (nh - orig_size[1])//2
+        img = img.crop((dx, dy, dx + orig_size[0], dy + orig_size[1]))
+    elif anim_name == "Deslizar":
+        offset = int(orig_size[0] * 0.15 * math.sin(progress * math.pi * 2))
+        tmp = Image.new("RGBA", orig_size, (0,0,0,0))
+        tmp.paste(img, (offset, 0))
+        img = tmp
+    elif anim_name == "Piscar":
+        alpha = int(255 * abs(math.sin(progress * math.pi * 3)))
+        ov = Image.new("RGBA", img.size, (0,0,0,255-alpha))
+        img = Image.alpha_composite(img, ov)
+    elif anim_name == "Pixelar":
+        px = max(1, int(20 * abs(math.sin(progress * math.pi))))
+        if px > 1:
+            small = img.resize((orig_size[0]//px, orig_size[1]//px), Image.NEAREST)
+            img = small.resize(orig_size, Image.NEAREST)
+    elif anim_name == "Glitch":
+        arr = np.array(img)
+        for _ in range(random.randint(2,5)):
+            y = random.randint(0, img.height-1)
+            shift = random.randint(-20,20)
+            if shift: arr[y,:] = np.roll(arr[y,:], shift, axis=0)
+        img = Image.fromarray(arr)
+    elif anim_name == "Pulsar":
+        scale = 1 + 0.08 * math.sin(progress * math.pi * 4)
+        nw, nh = int(orig_size[0]*scale), int(orig_size[1]*scale)
+        img = img.resize((nw, nh), Image.LANCZOS)
+        dx, dy = (nw - orig_size[0])//2, (nh - orig_size[1])//2
+        img = img.crop((dx, dy, dx + orig_size[0], dy + orig_size[1]))
+    elif anim_name == "Balançar":
+        angle = 8 * math.sin(progress * math.pi * 4)
+        img = img.rotate(angle, resample=Image.BILINEAR, center=(orig_size[0]//2, orig_size[1]))
+
+    # Garantir que o resultado final tenha o tamanho original e seja RGB
+    img = img.resize(orig_size, Image.LANCZOS).convert("RGB")
+    return np.array(img)
+
+# ==============================================================================
+# NOVA FUNÇÃO: Aplicar efeitos segmentados ao clipe
+# ==============================================================================
+def apply_effects_to_clip(clip, segments):
+    """
+    Aplica efeitos segmentados (filtros, molduras, animações) a um clipe.
+    Compatível com MoviePy 1.x e 2.x.
+    Segmentos sobrepostos são compostos no mesmo trecho.
+    """
+    if not segments:
+        return clip
+
+    # Ordena por início
+    segments = sorted(segments, key=lambda x: x["start"])
+    
+    # Agrupa segmentos por intervalo contínuo de tempo
+    grouped_segments = []
+    current_group = []
+    current_end = 0.0
+    
     for seg in segments:
-        combined = seg['title'] + " " + seg['text']
-        match = time_pattern.search(combined)
-        if match:
-            h1, m1, h2, m2 = map(int, match.groups())
-            seg['time_start'] = h1 * 60 + m1
-            seg['time_end'] = h2 * 60 + m2
+        s, e = seg["start"], seg["end"]
+        # Se este segmento começa antes do fim do grupo atual, eles se sobrepõem
+        if s < current_end:
+            current_group.append(seg)
+            current_end = max(current_end, e)
+        else:
+            if current_group:
+                grouped_segments.append((current_group, current_end))
+            current_group = [seg]
+            current_end = e
+    if current_group:
+        grouped_segments.append((current_group, current_end))
 
-    return segments
+    processed_parts = []
+    last_t = 0.0
 
-# ==========================
-# FUNÇÕES PARA GERAÇÃO DE VÍDEO POR SEGMENTO
-# ==========================
-def generate_segment_video(segment_text: str, analysis: Dict, output_path: str, 
-                           voice_profiles: Dict, music_library: Dict) -> bool:
-    """
-    Gera um vídeo para um segmento de texto.
-    - analysis: dicionário com 'tone', 'style', 'keywords', etc.
-    - voice_profiles: dicionário mapeando tom para VoiceProfile
-    - music_library: dicionário mapeando tom para caminho de arquivo de música
-    Retorna True se sucesso.
-    """
+    for group, group_end in grouped_segments:
+        # Determina o início do grupo (primeiro segmento do grupo)
+        group_start = min(seg["start"] for seg in group)
+        
+        # Adiciona parte sem efeitos antes do grupo
+        if group_start > last_t:
+            processed_parts.append(clip_subclip(clip, last_t, group_start))
+
+        # Subclipe do trecho do grupo (do início ao fim do grupo)
+        sub = clip_subclip(clip, group_start, group_end)
+
+        # Aplica todos os efeitos do grupo **em sequência** sobre o mesmo subclip
+        for seg in group:
+            if seg["type"] == "Filtro":
+                filtros = seg.get("params", {})
+                if filtros:
+                    sub = clip_fl_image(
+                        sub,
+                        lambda f, filtros=filtros: np.array(apply_filters(Image.fromarray(f), filtros))
+                    )
+            elif seg["type"] == "Moldura":
+                moldura = seg.get("params", {})
+                if moldura and moldura.get("tipo") != "Nenhuma":
+                    sub = clip_fl_image(
+                        sub,
+                        lambda f, moldura=moldura: np.array(apply_frame(Image.fromarray(f), moldura))
+                    )
+            elif seg["type"] == "Animação":
+                anim_params = seg.get("params", {})
+                anim_name = anim_params.get("tipo")
+                if anim_name and anim_name in ANIMATION_DB:
+                    # Função que processa cada frame da animação com progresso
+                    def make_frame_animation(get_frame, t, s=seg["start"], e=seg["end"],
+                                             anim_name=anim_name, anim_params=anim_params):
+                        frame = get_frame(t)
+                        progress = (t - s) / (e - s) if e > s else 0.0
+                        return apply_animation_to_frame(frame, anim_name, anim_params, progress)
+
+                    try:
+                        sub = sub.transform(make_frame_animation)
+                    except AttributeError:
+                        sub = sub.fl(make_frame_animation, keep_duration=True)
+
+        processed_parts.append(sub)
+        last_t = group_end
+
+    # Adiciona o restante do vídeo após o último grupo
+    if last_t < clip.duration:
+        processed_parts.append(clip_subclip(clip, last_t, clip.duration))
+
+    # Concatena todas as partes
+    if processed_parts:
+        return concatenate_videoclips(processed_parts)
+    return clip
+
+# ==============================================================================
+# GIF ANIMADO
+# ==============================================================================
+def make_gif(image: Image.Image, anim_cfg: Dict, duration: float = 2.0) -> bytes:
+    n = max(12, min(40, int(duration * 15)))
+    frames = []
+    orig_size = image.size
+    for i in range(n):
+        p = i / (n-1) if n > 1 else 0
+        frame = image.copy().convert("RGBA")
+        if "Girar" in anim_cfg:
+            angle = 360 * p
+            frame = frame.rotate(angle, resample=Image.BILINEAR, expand=False)
+        if "Zoom" in anim_cfg:
+            scale = 1 + 0.35 * math.sin(p * math.pi * 2)
+            nw, nh = int(orig_size[0]*scale), int(orig_size[1]*scale)
+            z = frame.resize((nw, nh), Image.LANCZOS)
+            dx, dy = (nw-orig_size[0])//2, (nh-orig_size[1])//2
+            frame = z.crop((dx, dy, dx+orig_size[0], dy+orig_size[1]))
+        if "Pulsar" in anim_cfg:
+            scale = 1 + 0.08 * math.sin(p * math.pi * 4)
+            nw, nh = int(orig_size[0]*scale), int(orig_size[1]*scale)
+            z = frame.resize((nw, nh), Image.LANCZOS)
+            dx, dy = (nw-orig_size[0])//2, (nh-orig_size[1])//2
+            frame = z.crop((dx, dy, dx+orig_size[0], dy+orig_size[1]))
+            frame = frame.resize(orig_size, Image.LANCZOS)
+        if "Deslizar" in anim_cfg:
+            offset = int(orig_size[0] * 0.15 * math.sin(p * math.pi * 2))
+            tmp = Image.new("RGBA", orig_size, (0,0,0,0))
+            tmp.paste(frame, (offset, 0))
+            frame = tmp
+        if "Balançar" in anim_cfg:
+            angle = 8 * math.sin(p * math.pi * 4)
+            frame = frame.rotate(angle, resample=Image.BILINEAR, center=(orig_size[0]//2, orig_size[1]))
+        if "Piscar" in anim_cfg:
+            alpha = int(255 * abs(math.sin(p * math.pi * 3)))
+            ov = Image.new("RGBA", frame.size, (0,0,0,255-alpha))
+            frame = Image.alpha_composite(frame, ov)
+        if "Pixelar" in anim_cfg:
+            px = max(1, int(20 * abs(math.sin(p * math.pi))))
+            if px > 1:
+                small = frame.resize((orig_size[0]//px, orig_size[1]//px), Image.NEAREST)
+                frame = small.resize(orig_size, Image.NEAREST)
+        if "Glitch" in anim_cfg:
+            arr = np.array(frame)
+            for _ in range(random.randint(2,5)):
+                y = random.randint(0, frame.height-1)
+                shift = random.randint(-20,20)
+                if shift: arr[y,:] = np.roll(arr[y,:], shift, axis=0)
+            frame = Image.fromarray(arr)
+        if frame.size != orig_size:
+            frame = frame.resize(orig_size, Image.LANCZOS)
+        frames.append(frame.convert("RGB"))
+    buf = io.BytesIO()
+    if frames:
+        frames[0].save(buf, format="GIF",
+                       append_images=frames[1:], save_all=True,
+                       duration=int(duration*1000/n), loop=0,
+                       optimize=True)
+    return buf.getvalue()
+
+# ==============================================================================
+# TTS
+# ==============================================================================
+def tts_generate(text: str, voice_key: str, speed: float = 1.0) -> Tuple[bool, str]:
+    if not TTS_SUPPORT:
+        return False, "Instale: pip install edge-tts"
     try:
-        # 1. Seleciona perfil de voz baseado no tom
-        tone = analysis.get('tone', 'Informativo')
-        voice_key = TONE_TO_VOICE.get(tone, 'masculina_padrao')
-        voice_profile = voice_profiles[voice_key]
-
-        # 2. Gera áudio TTS
-        audio_path = output_path.replace('.mp4', '_audio.mp3')
-        success, audio_result = text_to_speech_edge(segment_text, voice_profile, audio_path)
-        if not success:
-            st.error(f"Falha no TTS: {audio_result}")
-            return False
-
-        # 3. Obtém duração do áudio
-        audio_info = get_media_info(audio_path, 'audio')
-        audio_duration = audio_info.get('duration', 5)
-
-        # 4. Seleciona música de fundo (se disponível)
-        music_path = music_library.get(tone, music_library.get('default', None))
-        final_audio = audio_path
-        mixed_audio_path = None
-        if music_path and os.path.exists(music_path):
-            # Mixa música com áudio (volume reduzido)
-            mixed_audio_path = output_path.replace('.mp4', '_mixed.mp3')
-            mix_audio_with_music(audio_path, music_path, mixed_audio_path, music_volume=0.3)
-            final_audio = mixed_audio_path
-
-        # 5. Cria vídeo com fundo escuro e texto animado
-        video_path = output_path
-        create_text_video(
-            text=segment_text,
-            audio_path=final_audio,
-            output_path=video_path,
-            duration=audio_duration,
-            bg_color="#000000",
-            text_color="#FFFFFF",
-            font_size=48,
-            resolution="1920x1080",
-            fps=30
-        )
-
-        # 6. Limpeza (remove arquivos temporários)
-        if os.path.exists(audio_path):
-            os.remove(audio_path)
-        if mixed_audio_path and os.path.exists(mixed_audio_path):
-            os.remove(mixed_audio_path)
-
-        return True
-
+        vp = VOICE_PROFILES.get(voice_key, VOICE_PROFILES["masculina_padrao"])
+        rate_pct = int((speed - 1.0) * 100)
+        rate_str = f"+{rate_pct}%" if rate_pct >= 0 else f"{rate_pct}%"
+        out = os.path.join(st.session_state.working_dir, f"tts_{uuid.uuid4().hex[:8]}.mp3")
+        comm = edge_tts.Communicate(text=text[:5000], voice=vp["code"], rate=rate_str)
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(comm.save(out))
+            loop.close()
+        except Exception:
+            asyncio.run(comm.save(out))
+        return True, out
     except Exception as e:
-        st.error(f"Erro ao gerar vídeo do segmento: {str(e)}")
-        traceback.print_exc()
-        return False
+        return False, str(e)
 
-def create_text_video(text: str, audio_path: str, output_path: str, duration: float,
-                      bg_color="#000000", text_color="#FFFFFF", font_size=48,
-                      resolution="1920x1080", fps=30):
-    """
-    Cria um vídeo com fundo colorido e texto centralizado.
-    O texto é dividido em linhas para caber na tela.
-    """
-    width, height = map(int, resolution.split('x'))
-    
-    # Prepara o texto: quebra em linhas de no máximo 60 caracteres
-    words = text.split()
-    lines = []
-    current_line = ""
-    for word in words:
-        if len(current_line) + len(word) + 1 <= 60:
-            current_line += " " + word if current_line else word
-        else:
-            lines.append(current_line)
-            current_line = word
-    if current_line:
-        lines.append(current_line)
-    
-    # Converte para string com quebras de linha
-    multiline_text = "\\n".join(lines)  # para usar no drawtext
-    
-    # Escapa caracteres especiais para ffmpeg
-    multiline_text = multiline_text.replace("'", r"\'").replace(":", r"\:")
-    
-    # Comando ffmpeg: fundo colorido com texto centralizado
-    cmd = [
-        'ffmpeg',
-        '-f', 'lavfi', '-i', f"color=c={bg_color}:s={resolution}:d={duration}:r={fps}",
-        '-i', audio_path,
-        '-vf', f"drawtext=text='{multiline_text}':fontcolor={text_color}:fontsize={font_size}:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.5:boxborderw=10",
-        '-c:v', 'libx264', '-preset', 'medium', '-crf', '23',
-        '-c:a', 'aac', '-b:a', '192k',
-        '-shortest', '-y', output_path
-    ]
-    
-    try:
-        subprocess.run(cmd, capture_output=True, check=True)
-        return True
-    except subprocess.CalledProcessError as e:
-        st.error(f"Erro ffmpeg: {e.stderr.decode()}")
-        return False
-
-def mix_audio_with_music(voice_audio: str, music_audio: str, output_path: str, music_volume=0.3):
-    """
-    Mixa voz e música, reduzindo o volume da música.
-    """
-    cmd = [
-        'ffmpeg',
-        '-i', voice_audio,
-        '-i', music_audio,
-        '-filter_complex', f'[1:a]volume={music_volume}[music]; [0:a][music]amix=inputs=2:duration=longest',
-        '-c:a', 'libmp3lame', '-q:a', '2',
-        output_path, '-y'
-    ]
-    subprocess.run(cmd, capture_output=True, check=True)
-
-def concatenate_videos(video_paths: List[str], output_path: str) -> bool:
-    """Concatena vários vídeos usando ffmpeg."""
-    list_file = os.path.join(os.path.dirname(output_path), "concat_list.txt")
-    with open(list_file, 'w') as f:
-        for v in video_paths:
-            f.write(f"file '{os.path.abspath(v)}'\n")
-    cmd = [
-        'ffmpeg', '-f', 'concat', '-safe', '0',
-        '-i', list_file,
-        '-c', 'copy',
-        output_path, '-y'
-    ]
-    try:
-        subprocess.run(cmd, capture_output=True, check=True)
-        return True
-    except subprocess.CalledProcessError as e:
-        st.error(f"Erro na concatenação: {e.stderr.decode()}")
-        return False
-    finally:
-        if os.path.exists(list_file):
-            os.remove(list_file)
-
-def analyze_segment_enhanced(segment_text: str, scene_desc: str = "") -> Dict:
-    """
-    Analisa um segmento individual para determinar:
-        - tema principal
-        - palavras-chave
-        - sentimento (positivo, negativo, neutro)
-        - tom sugerido (inspirador, informativo, etc.)
-        - estilo visual sugerido
-        - palavras que indicam necessidade de efeitos sonoros
-    """
-    theme_analysis = analyze_text_for_themes(segment_text)
-    primary_theme = theme_analysis.get('primary_theme', 'geral')
-    keywords = extract_optimized_keywords(segment_text, max_keywords=5)
-
-    sentiment = analyze_sentiment_enhanced(segment_text)
-
-    tone = "Informativo"
-    if sentiment['positive'] > 60:
-        tone = "Inspirador"
-    elif sentiment['negative'] > 40:
-        tone = "Urgente"
-    emotional_words = ['incrível', 'fantástico', 'surpreendente', 'revolucionário', 'poderoso']
-    if any(w in segment_text.lower() for w in emotional_words):
-        tone = "Empolgante"
-
-    style_map = {
-        'educação': 'Profissional e didático',
-        'tecnologia': 'Futurista e minimalista',
-        'marketing': 'Persuasivo e vibrante',
-        'entretenimento': 'Animado e colorido',
-        'saúde': 'Calmo e clean',
-        'negócios': 'Sóbrio e profissional'
-    }
-    style = style_map.get(primary_theme, 'Cinematográfico')
-
-    sound_effects_keywords = ['explosão', 'batida', 'alarme', 'passos', 'porta', 'chuva', 'trovão', 'aplausos', 'risos']
-    effects_needed = [word for word in sound_effects_keywords if word in segment_text.lower()]
-
+# ==============================================================================
+# ANÁLISE DE CONTEÚDO
+# ==============================================================================
+def analyze_content(text: str) -> Dict:
+    tl = text.lower()
+    scores = {}
+    for theme, kws in THEME_KW.items():
+        sc = sum(tl.count(k) for k in kws)
+        if sc > 0: scores[theme] = sc
+    sorted_t = sorted(scores.items(), key=lambda x:x[1], reverse=True)
+    primary = sorted_t[0][0] if sorted_t else "geral"
+    wc = len(text.split())
+    eng = min(100, 40 + wc//8 + text.count("?")*5 + text.count("!")*2)
     return {
-        'primary_theme': primary_theme,
-        'keywords': keywords,
-        'sentiment': sentiment,
-        'tone': tone,
-        'style': style,
-        'effects_needed': effects_needed,
-        'scene_desc': scene_desc
+        "primary": primary, "themes": dict(sorted_t[:4]),
+        "word_count": wc, "engagement": eng,
+        "reading_min": round(wc/150, 1),
     }
 
-def generate_multimedia_prompts(segment_analysis: Dict, user_style: str = None, user_tone: str = None, original_text: str = "") -> Dict:
-    """
-    Gera prompts para diferentes mídias com base na análise, preferências do usuário e o texto original do segmento.
-    Retorna dicionário com prompts para imagem, música, efeitos sonoros e narração.
-    """
-    theme = segment_analysis['primary_theme']
-    keywords = segment_analysis['keywords']
-    tone = user_tone or segment_analysis['tone']
-    style = user_style or segment_analysis['style']
-    scene_desc = segment_analysis.get('scene_desc', '')
-    effects = segment_analysis.get('effects_needed', [])
-    
-    context = original_text[:300] + "..." if len(original_text) > 300 else original_text
-
-    if scene_desc:
-        image_prompt = f"Crie uma imagem baseada na descrição: {scene_desc}. Contexto adicional do roteiro: {context}. Estilo visual: {style}. Tom emocional: {tone}."
-    else:
-        image_prompt = f"Crie uma imagem representando o tema '{theme}', com foco em {', '.join(keywords)}. Baseie-se no seguinte trecho do roteiro: {context}. Estilo visual: {style}. Tom emocional: {tone}."
-
-    music_prompt = f"Composição musical de fundo para um vídeo sobre {theme}. O trecho correspondente do roteiro diz: {context}. Estilo musical: {style}, tom {tone.lower()}. Instrumentos sugeridos: {'sintetizadores' if theme=='tecnologia' else 'orquestral' if theme in ['cinema', 'épico'] else 'piano e cordas'}. Duração aproximada: 30-60 segundos, com variação de intensidade conforme a emoção do texto."
-
-    if effects:
-        sfx_prompt = f"Incluir efeitos sonoros nos momentos apropriados, baseado no seguinte trecho: {context}. Efeitos sugeridos: {', '.join(effects)}. Os efeitos devem ser sutis e bem integrados à cena, reforçando as ações ou emoções descritas."
-    else:
-        sfx_prompt = f"Sem necessidade de efeitos sonoros específicos para este segmento; manter apenas a música de fundo. O trecho é: {context}."
-
-    narration_prompt = f"Tom de narração: {tone}. Velocidade: moderada, com pausas para ênfase. Destaque as palavras-chave: {', '.join(keywords)}. O texto a ser narrado é:\n\n{original_text}"
-
+def gen_ai_prompts(theme: str, words: List[str], platform: str, tone: str) -> Dict:
+    kw = ", ".join(words[:5]) if words else theme
     return {
-        'image': image_prompt,
-        'music': music_prompt,
-        'sound_effects': sfx_prompt,
-        'narration': narration_prompt
+        "🎨 Imagem/Visual":   f"Crie imagem {tone.lower()} sobre {kw}. Tema: {theme}. Plataforma: {platform}. Alta qualidade, composição impactante, cores que reflitam o tema.",
+        "🔊 Áudio/Narração":  f"Narração {tone.lower()} sobre {kw}. Tema: {theme}. Duração 60s. Plataforma: {platform}. Gancho nos primeiros 5s + call-to-action final.",
+        "🎬 Roteiro de Vídeo":f"Roteiro vídeo 60s sobre {kw}. Plataforma {platform}. Tom {tone}.\n0-5s: Hook visual\n5-50s: Desenvolvimento\n50-60s: CTA forte.",
+        "📝 Texto/Legenda":   f"Texto {tone.lower()} otimizado para {platform} sobre {kw}. Tema {theme}. Inclua hashtags relevantes e call-to-action.",
+        "📊 Storyboard":      f"Storyboard 8 cenas para vídeo sobre {kw}:\nCena 1: Hook (0-5s)\nCena 2-6: Conteúdo (5-50s)\nCena 7-8: CTA (50-60s)\nEstilo: {tone}.",
     }
 
-def render_conversation_to_video_tab():
-    st.markdown("### 🎬 Criar Vídeo a partir de Conversa com IA")
-    st.markdown("""
-    Cole abaixo uma conversa ou roteiro (como o exemplo do AlmaFluxo).  
-    A plataforma irá analisar automaticamente, dividir em partes e gerar sugestões de prompts para cada segmento. Copie e cole o segmento junto o prompt desejado.
-    """)
-
-    conversation_text = st.text_area(
-        "📋 Cole o texto da conversa aqui",
-        height=300,
-        key="conversation_input"
-    )
-
-    if st.button("🔍 Analisar Conversa", type="primary", use_container_width=True):
-        if not conversation_text.strip():
-            st.warning("Cole um texto primeiro.")
-        else:
-            with st.spinner("Analisando e dividindo em segmentos..."):
-                segments = extract_segments_from_conversation(conversation_text)
-                if not segments:
-                    st.warning("Não foi possível identificar segmentos. O texto pode não ter uma estrutura clara.")
-                else:
-                    st.session_state.conversation_segments = []
-                    for seg in segments:
-                        analysis = analyze_segment_enhanced(seg['text'], seg.get('scene_desc', ''))
-                        prompts = generate_multimedia_prompts(
-                            segment_analysis=analysis,
-                            original_text=seg['text']
-                        )
-                        seg['analysis'] = analysis
-                        seg['prompts'] = prompts
-                        st.session_state.conversation_segments.append(seg)
-
-                    st.success(f"Conversa dividida em {len(segments)} segmentos!")
-
-    if 'conversation_segments' in st.session_state and st.session_state.conversation_segments:
-        st.markdown("#### 📌 Segmentos Identificados")
-
-        # Se houver um template narrativo ativo, oferecer associação
-        if st.session_state.narrative_template:
-            st.markdown("#### 🔗 Associar Segmentos aos Atos Narrativos")
-            act_options = [f"Ato {a.number}: {a.title}" for a in st.session_state.narrative_template.acts]
-            
-            for idx, seg in enumerate(st.session_state.conversation_segments):
-                assigned_act = st.selectbox(
-                    f"Segmento {idx+1} ({seg['title']}) pertence a:",
-                    act_options,
-                    key=f"assign_{idx}"
-                )
-                seg['assigned_act'] = assigned_act
-
-        with st.expander("🎨 Configurações Globais (opcional)", expanded=False):
-            global_style = st.selectbox(
-                "Estilo Visual Padrão",
-                ['Realista', 'Cinematográfico', 'Animado', 'Minimalista', 'Futurista', 'Vintage', 'Profissional', 'Casual'],
-                index=1
-            )
-            global_tone = st.selectbox(
-                "Tom Padrão",
-                ['Inspirador', 'Informativo', 'Persuasivo', 'Divertido', 'Emocional', 'Autoritário', 'Amigável', 'Urgente', 'Empolgante'],
-                index=0
-            )
-
-        for idx, seg in enumerate(st.session_state.conversation_segments):
-            time_str = f"{seg.get('time_start', '?')}s - {seg.get('time_end', '?')}s"
-            with st.expander(f"**{seg['title']}** (tempo: {time_str})", expanded=idx==0):
-                col1, col2 = st.columns([2, 2])
-
-                with col1:
-                    st.markdown(f"**Texto:**\n{seg['text'][:300]}..." if len(seg['text'])>300 else seg['text'])
-                    st.markdown(f"**Tema:** {seg['analysis']['primary_theme']} | **Tom:** {seg['analysis']['tone']} | **Estilo sugerido:** {seg['analysis']['style']}")
-                    if seg['analysis']['effects_needed']:
-                        st.markdown(f"**Efeitos sugeridos:** {', '.join(seg['analysis']['effects_needed'])}")
-
-                with col2:
-                    st.markdown("**Personalizar:**")
-                    seg_style = st.selectbox(
-                        "Estilo",
-                        ['Realista', 'Cinematográfico', 'Animado', 'Minimalista', 'Futurista', 'Vintage', 'Profissional', 'Casual'],
-                        index=['Realista', 'Cinematográfico', 'Animado', 'Minimalista', 'Futurista', 'Vintage', 'Profissional', 'Casual'].index(seg['analysis']['style']) if seg['analysis']['style'] in ['Realista', 'Cinematográfico', 'Animado', 'Minimalista', 'Futurista', 'Vintage', 'Profissional', 'Casual'] else 1,
-                        key=f"style_{idx}"
-                    )
-                    seg_tone = st.selectbox(
-                        "Tom",
-                        ['Inspirador', 'Informativo', 'Persuasivo', 'Divertido', 'Emocional', 'Autoritário', 'Amigável', 'Urgente', 'Empolgante'],
-                        index=['Inspirador', 'Informativo', 'Persuasivo', 'Divertido', 'Emocional', 'Autoritário', 'Amigável', 'Urgente', 'Empolgante'].index(seg['analysis']['tone']) if seg['analysis']['tone'] in ['Inspirador', 'Informativo', 'Persuasivo', 'Divertido', 'Emocional', 'Autoritário', 'Amigável', 'Urgente', 'Empolgante'] else 0,
-                        key=f"tone_{idx}"
-                    )
-
-                if st.button(f"🔄 Regenerar Prompts", key=f"regenerate_{idx}"):
-                    seg['analysis']['style'] = seg_style
-                    seg['analysis']['tone'] = seg_tone
-                    new_prompts = generate_multimedia_prompts(
-                        segment_analysis=seg['analysis'],
-                        user_style=seg_style,
-                        user_tone=seg_tone,
-                        original_text=seg['text']
-                    )
-                    seg['prompts'] = new_prompts
-                    st.rerun()
-
-                st.markdown("**📋 Prompts gerados:**")
-                prompt_tabs = st.tabs(["🖼️ Imagem", "🎵 Música", "🔊 Efeitos", "🎤 Narração"])
-                with prompt_tabs[0]:
-                    st.code(seg['prompts']['image'], language='text')
-                with prompt_tabs[1]:
-                    st.code(seg['prompts']['music'], language='text')
-                with prompt_tabs[2]:
-                    st.code(seg['prompts']['sound_effects'], language='text')
-                with prompt_tabs[3]:
-                    st.code(seg['prompts']['narration'], language='text')
-
-        if st.button("🎬 GERAR VÍDEO COMPLETO", type="primary", use_container_width=True):
-            if not st.session_state.conversation_segments:
-                st.warning("Nenhum segmento para gerar vídeo.")
-            else:
-                with st.spinner("Gerando vídeos dos segmentos..."):
-                    segment_videos = []
-                    progress_bar = st.progress(0)
-                    for idx, seg in enumerate(st.session_state.conversation_segments):
-                        # Caminho para o vídeo deste segmento
-                        seg_video_path = os.path.join(
-                            st.session_state.working_dir,
-                            f"segment_{idx:03d}.mp4"
-                        )
-                        
-                        # Usa a análise armazenada no segmento
-                        analysis = seg['analysis']
-                        
-                        # Gera vídeo
-                        success = generate_segment_video(
-                            segment_text=seg['text'],
-                            analysis=analysis,
-                            output_path=seg_video_path,
-                            voice_profiles=DEFAULT_VOICE_PROFILES,
-                            music_library=MUSIC_LIBRARY
-                        )
-                        if success:
-                            segment_videos.append(seg_video_path)
-                        else:
-                            st.error(f"Falha no segmento {idx+1}")
-                            break
-                        
-                        progress_bar.progress((idx+1)/len(st.session_state.conversation_segments))
-                    
-                    if len(segment_videos) == len(st.session_state.conversation_segments):
-                        # Concatena todos os vídeos
-                        final_video = os.path.join(
-                            st.session_state.working_dir,
-                            f"conversa_completa_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
-                        )
-                        if concatenate_videos(segment_videos, final_video):
-                            st.session_state.generated_video = final_video
-                            st.success("✅ Vídeo completo gerado!")
-                            # Limpa vídeos temporários
-                            for v in segment_videos:
-                                try: os.remove(v)
-                                except: pass
-                        else:
-                            st.error("Falha ao concatenar vídeos.")
-                    else:
-                        st.error("Nem todos os segmentos foram gerados com sucesso.")
-
-def render_sidebar():
-    with st.sidebar:
-        st.markdown("### 🎛️ Controle Principal")
-        
-        with st.expander("📤 Upload de Arquivos", expanded=True):
-            uploaded_video = st.file_uploader(
-                "🎥 Vídeo",
-                type=['mp4', 'mov', 'avi', 'mkv', 'webm', 'flv'],
-                help="Faça upload do vídeo para edição",
-                key="video_uploader"
-            )
-            
-            uploaded_audio = st.file_uploader(
-                "🔊 Áudio",
-                type=['mp3', 'wav', 'ogg', 'm4a', 'flac'],
-                help="Faça upload de áudio para transcrição",
-                key="audio_uploader"
-            )
-            
-            if uploaded_video is not None and uploaded_video != st.session_state.uploaded_video:
-                video_path = os.path.join(st.session_state.working_dir, f"video_{uuid.uuid4().hex[:8]}.mp4")
-                with open(video_path, 'wb') as f:
-                    f.write(uploaded_video.getvalue())
-                
-                st.session_state.video_path = video_path
-                st.session_state.video_info = get_media_info(video_path, 'video')
-                st.session_state.uploaded_video = uploaded_video
-                
-                with st.spinner("Extraindo áudio do vídeo..."):
-                    audio_path = extract_audio_from_video(video_path)
-                    if audio_path:
-                        st.session_state.audio_path = audio_path
-                        st.session_state.audio_info = get_media_info(audio_path, 'audio')
-                
-                st.success("✅ Vídeo carregado com sucesso!")
-                st.rerun()
-            
-            if uploaded_audio is not None and uploaded_audio != st.session_state.uploaded_audio:
-                audio_path = os.path.join(st.session_state.working_dir, f"audio_{uuid.uuid4().hex[:8]}.mp3")
-                with open(audio_path, 'wb') as f:
-                    f.write(uploaded_audio.getvalue())
-                
-                st.session_state.audio_path = audio_path
-                st.session_state.audio_info = get_media_info(audio_path, 'audio')
-                st.session_state.uploaded_audio = uploaded_audio
-                st.success("✅ Áudio carregado com sucesso!")
-                st.rerun()
-        
-        with st.expander("⚙️ Configurações", expanded=True):
-            st.session_state.project_name = st.text_input(
-                "Nome do Projeto",
-                value=st.session_state.project_name,
-                key="project_name_input"
-            )
-            
-            st.session_state.auto_mode = st.checkbox(
-                "Modo Automático",
-                value=True,
-                help="Executa operações automaticamente quando possível",
-                key="auto_mode_checkbox"
-            )
-            
-            part_duration = st.select_slider(
-                "Duração das Partes",
-                options=[15, 30, 60, 120, 180, 300],
-                value=60,
-                format_func=lambda x: f"{x}s",
-                key="part_duration_slider"
-            )
-            
-            if st.button("🔪 Dividir Vídeo", use_container_width=True, key="split_video_button"):
-                if st.session_state.video_path:
-                    with st.spinner("Dividindo vídeo em partes..."):
-                        parts = split_video_into_parts(st.session_state.video_path, part_duration)
-                        if parts:
-                            st.session_state.video_parts = parts
-                            st.session_state.is_partitioned = True
-                            st.success(f"Vídeo dividido em {len(parts)} partes!")
-                            st.rerun()
-                        else:
-                            st.error("Falha ao dividir o vídeo")
-                else:
-                    st.warning("Nenhum vídeo carregado")
-        
-        st.markdown("### 🔧 Status")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            if st.session_state.video_path:
-                st.markdown('<div class="status-indicator status-ready">✅ Vídeo</div>', unsafe_allow_html=True)
-            else:
-                st.markdown('<div class="status-indicator status-missing">❌ Vídeo</div>', unsafe_allow_html=True)
-        
-        with col2:
-            if st.session_state.audio_path:
-                st.markdown('<div class="status-indicator status-ready">✅ Áudio</div>', unsafe_allow_html=True)
-            else:
-                st.markdown('<div class="status-indicator status-missing">❌ Áudio</div>', unsafe_allow_html=True)
-        
-        with col3:
-            if st.session_state.transcribed_text:
-                st.markdown('<div class="status-indicator status-ready">✅ Texto</div>', unsafe_allow_html=True)
-            else:
-                st.markdown('<div class="status-indicator status-missing">❌ Texto</div>', unsafe_allow_html=True)
-        
-        if st.session_state.video_analysis_complete:
-            st.markdown("### 🧠 Análise")
-            st.markdown('<div class="status-indicator status-ready">✅ Análise Completa</div>', unsafe_allow_html=True)
-        
-        st.markdown("### ⚡ Ações Rápidas")
-        
-        col_actions1, col_actions2 = st.columns(2)
-        
-        with col_actions1:
-            if st.button("🔄 Analisar", use_container_width=True, 
-                        disabled=not st.session_state.video_path or not st.session_state.transcribed_text,
-                        key="analyze_button"):
-                if st.session_state.video_path and st.session_state.transcribed_text:
-                    with st.spinner("Analisando conteúdo do vídeo..."):
-                        analysis = analyze_video_content(
-                            st.session_state.video_path,
-                            st.session_state.transcribed_text
-                        )
-                        st.session_state.video_analysis = analysis
-                        st.session_state.video_analysis_complete = True
-                        st.success("Análise concluída!")
-                        st.rerun()
-        
-        with col_actions2:
-            if st.button("🧹 Limpar", use_container_width=True, key="clear_button"):
-                for key in list(st.session_state.keys()):
-                    if key not in ['initialized', 'dependencies']:
-                        del st.session_state[key]
-                initialize_state()
-                st.success("Sistema limpo e reiniciado!")
-                st.rerun()
-        
-        st.markdown("---")
-        st.markdown("### ℹ️ Informações")
-        st.caption(f"**ID do Projeto:** {st.session_state.project_id}")
-        st.caption(f"**Diretório:** {st.session_state.working_dir}")
-        st.caption("**Versão:** 10.0 • Edição Completa")
-
+# ==============================================================================
+# INTERFACE: HEADER E SIDEBAR (COM ASSISTENTE)
+# ==============================================================================
 def render_header():
-    """Renderiza cabeçalho da aplicação"""
+    def badge(text, kind="ok"):
+        cls = "badge-warn" if kind == "warn" else ("badge-err" if kind == "err" else "badge")
+        return f'<span class="{cls}">{text}</span>'
+    b_vid = badge("🎬 VÍDEO ✅") if VIDEO_SUPPORT else badge("🎬 VÍDEO ❌","err")
+    b_tts = badge("🗣️ TTS ✅")   if TTS_SUPPORT  else badge("🗣️ TTS ❌","warn")
+    b_wsp = badge("🎧 WHISPER ✅") if WHISPER_SUPPORT else badge("🎧 WHISPER ❌","warn")
     st.markdown(f"""
-    <div class="main-header">
-        <h1>🎬 STUDIO PRO EDITOR AI</h1>
-        <p>Edição Completa de Vídeo e Áudio • IA Integrada • Fácil e Poderoso</p>
-        <div style="margin-top: 1rem; font-size: 0.9rem; opacity: 0.8;">
-            <span class="status-indicator status-ready">✅ Online</span> • 
-            <span class="status-indicator status-ready">⚡ Pronto</span> • 
-            Projeto: {st.session_state.project_name}
-        </div>
+    <div class="hdr">
+      <h1>🎬 STUDIO PRO CREATOR AI v6.0</h1>
+      <p>Filtros • Vídeo • GIF • IA • Screenshot • TTS • Montagem • Timeline</p>
+      <div>
+        {badge("v6.0")} {b_vid} {b_tts} {b_wsp}
+      </div>
     </div>
     """, unsafe_allow_html=True)
 
-# ==========================
-# APLICAÇÃO PRINCIPAL
-# ==========================
-def main():
-    """Função principal da aplicação"""
-    initialize_state()
-    
-    render_header()
-    
-    render_sidebar()
-    
-    # Sistema de abas principal - AGORA COM A ABA "ESTRUTURA NARRATIVA"
-    tabs = st.tabs([
-        "📤 Upload", 
-        "✂️ Editar Vídeo", 
-        "🔊 Editar Áudio", 
-        "📝 Transcrição", 
-        "🤖 IA", 
-        "🎭 Estrutura Narrativa",  # NOVA ABA
-        "📝 Texto para Vídeo",
-        "🎬 Conversa para Vídeo",
-        "💾 Exportar"
-    ])
-    
-    with tabs[0]:
-        render_upload_tab()
-    
-    with tabs[1]:
-        render_edit_tab()
-    
-    with tabs[2]:
-        render_audio_tab()
-    
-    with tabs[3]:
-        render_text_tab()
-    
-    with tabs[4]:
-        render_ai_tab()
-    
-    with tabs[5]:
-        render_narrative_tab()
-    
-    with tabs[6]:
-        render_text_to_video_tab()
-    
-    with tabs[7]:
-        render_conversation_to_video_tab()
-    
-    with tabs[8]:
-        render_export_tab()
-    
-    st.markdown("---")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.caption(f"**🎬 Studio Pro Editor AI**")
-        st.caption("v10.0 • Edição Completa")
-    
-    with col2:
-        if st.session_state.video_info:
-            dur = st.session_state.video_info.get('duration', 0)
-            st.caption(f"**⏱️ Duração:** {dur:.1f}s")
-        else:
-            st.caption("**⏱️ Duração:** --")
-    
-    with col3:
-        if st.session_state.video_parts:
-            st.caption(f"**🔪 Partes:** {len(st.session_state.video_parts)}")
-        else:
-            st.caption("**🔪 Partes:** --")
-    
-    with col4:
-        if st.session_state.transcribed_text:
-            words = len(st.session_state.transcribed_text.split())
-            st.caption(f"**📝 Palavras:** {words}")
-        else:
-            st.caption("**📝 Palavras:** --")
+def render_sidebar():
+    with st.sidebar:
+        st.markdown("### 🗂️ PROJETO")
+        st.session_state.project_name = st.text_input(
+            "Nome", value=st.session_state.project_name, key="proj_name",
+            help="Dê um nome ao seu projeto para organizar as exportações."
+        )
 
-# ==========================
-# EXECUÇÃO
-# ==========================
-if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        st.error(f"Ocorreu um erro crítico: {str(e)}")
-        st.info("Recarregue a página ou limpe o cache do navegador.")
-        
-        if st.button("🔄 Reiniciar Aplicação", type="primary"):
-            for key in list(st.session_state.keys()):
-                if key != 'initialized':
-                    del st.session_state[key]
+        st.markdown("---")
+        st.markdown("### 📤 ENVIAR MÍDIA")
+        ftypes = ["jpg","jpeg","png","webp"]
+        if VIDEO_SUPPORT:
+            ftypes += ["mp4","mov","avi","mkv","webm","mpeg4"]
+
+        uploaded = st.file_uploader(
+            "🖼️ Imagem ou 🎬 Vídeo",
+            type=ftypes,
+            key="main_uploader",
+            help="Arraste ou clique para enviar. Formatos suportados: imagens (JPG,PNG,WEBP) e vídeos (MP4,MOV,AVI)."
+        )
+
+        if uploaded and uploaded.file_id != st.session_state.uploaded_file_id:
+            with st.spinner("Carregando..."):
+                if uploaded.type.startswith("video/") or \
+                   uploaded.name.lower().split(".")[-1] in ["mp4","mov","avi","mkv","webm","mpeg4"]:
+                    clip, path = load_video(uploaded)
+                    if clip is not None:
+                        st.session_state.video_clip = clip
+                        st.session_state.video_path = path
+                        frame0 = extract_frame(clip, 0.0)
+                        if frame0:
+                            st.session_state.video_frame = frame0
+                            st.session_state.base_image = frame0
+                        st.success(f"🎬 Vídeo: {clip.duration:.1f}s")
+                    else:
+                        st.error("Falha ao carregar vídeo.")
+                else:
+                    img = Image.open(uploaded)
+                    img = resize_safe(img)
+                    st.session_state.base_image = img
+                    st.session_state.video_clip = None
+                    st.session_state.video_frame = None
+                    st.success("🖼️ Imagem carregada!")
+            st.session_state.uploaded_file_id = uploaded.file_id
+
+        aud_up = st.file_uploader(
+            "🔊 Áudio",
+            type=["mp3","wav","m4a","ogg"],
+            key="aud_uploader",
+            help="Envie um arquivo de áudio para usar como trilha sonora ou para transcrição."
+        )
+        if aud_up:
+            ap = os.path.join(st.session_state.working_dir, "audio_in.mp3")
+            with open(ap,"wb") as f: f.write(aud_up.read())
+            st.session_state["audio_path"] = ap
+            st.success("🔊 Áudio carregado!")
+
+        st.markdown("---")
+        st.markdown("### 👁️ PREVIEW")
+        if st.session_state.video_clip is not None:
+            st.markdown(f'<div class="badge">🎬 Vídeo: {st.session_state.video_clip.duration:.1f}s</div>',
+                        unsafe_allow_html=True)
+            if st.session_state.video_frame:
+                st.image(st.session_state.video_frame,
+                         caption="Frame atual", use_container_width=True)
+        elif st.session_state.base_image:
+            st.image(st.session_state.base_image,
+                     caption="Imagem carregada", use_container_width=True)
+        else:
+            st.markdown('<div class="card cl">Nenhuma mídia carregada.</div>',
+                        unsafe_allow_html=True)
+
+        # --- ASSISTENTE RÁPIDO ---
+        st.markdown("---")
+        st.markdown("### 🧭 Assistente Rápido")
+        if not st.session_state.get("video_clip") and not st.session_state.get("base_image"):
+            st.info("👆 **Primeiro passo:** Envie uma imagem ou vídeo acima.")
+        elif st.session_state.get("video_clip"):
+            st.success("✅ Vídeo carregado!")
+            st.markdown("""
+            **Sugestões:**
+            - Vá para **🎞️ Editor de Vídeo** para cortar ou aplicar efeitos por tempo.
+            - Extraia um **frame** para editar como imagem na aba **🎨 Filtros**.
+            """)
+        elif st.session_state.get("base_image"):
+            st.success("✅ Imagem carregada!")
+            st.markdown("""
+            **Sugestões:**
+            - Use a aba **🎨 Filtros & Molduras** para aplicar efeitos.
+            - Crie um **GIF animado** na aba **🎬 Animações**.
+            """)
+
+        st.markdown("---")
+        st.markdown("### ⚙️ STATUS")
+        for name, ok in [
+            ("MoviePy (Vídeo)", VIDEO_SUPPORT),
+            ("edge-tts (TTS)",  TTS_SUPPORT),
+            ("Whisper (STT)",   WHISPER_SUPPORT),
+            ("OpenCV",          True),
+            ("Pillow",          True),
+            ("NumPy",           True),
+        ]:
+            st.caption(("🟢 " if ok else "🔴 ") + name)
+
+        if shutil.which("ffmpeg"):
+            st.caption("🟢 FFmpeg")
+        else:
+            st.caption("🟡 FFmpeg (não no PATH)")
+
+        st.markdown("---")
+        if st.button("🔄 Reset Total", key="reset_btn", help="Apaga todos os dados do projeto e reinicia."):
+            for k in list(st.session_state.keys()):
+                del st.session_state[k]
             st.rerun()
+
+        st.caption(f"Studio Pro v6.0 | φ={PHI}")
+
+# ==============================================================================
+# HELPER: OBTER IMAGEM DE TRABALHO
+# ==============================================================================
+def get_work_image() -> Optional[Image.Image]:
+    return (st.session_state.processed_image
+            or st.session_state.video_frame
+            or st.session_state.base_image
+            or st.session_state.screenshot_data)
+
+def get_source_image() -> Optional[Image.Image]:
+    return (st.session_state.video_frame
+            or st.session_state.base_image
+            or st.session_state.screenshot_data)
+
+# ==============================================================================
+# ABA DE AJUDA E TUTORIAIS (NOVA)
+# ==============================================================================
+def tab_ajuda():
+    st.markdown('<div class="stitle">📖 Ajuda & Tutoriais</div>', unsafe_allow_html=True)
+    
+    with st.expander("🚀 Primeiros Passos", expanded=True):
+        st.markdown("""
+        ### Bem-vindo ao Studio Pro Creator AI!
+        Este é um estúdio completo para edição de imagens, vídeos, GIFs e muito mais, com inteligência artificial integrada.
+        
+        **Como começar:**
+        1. **Carregue uma mídia** na barra lateral (imagem ou vídeo).
+        2. **Escolha uma das abas** para editar:
+           - 🎞️ **Editor de Vídeo**: corte, extraia frames e aplique efeitos em trechos específicos (timeline).
+           - 🎨 **Filtros & Molduras**: adicione filtros de cor, molduras e texto sobre imagens/frames.
+           - 🎬 **Animações & GIF**: crie GIFs animados a partir de uma imagem.
+           - 📸 **Screenshot**: capture telas ou use a câmera.
+           - 🤖 **IA & Áudio**: converta texto em fala (TTS), transcreva áudios e gere prompts para IAs.
+           - 🎼 **Montagem**: organize imagens com áudio e gere roteiros.
+           - 📦 **Exportar**: baixe seus arquivos finais.
+        3. **Exporte** o resultado quando estiver satisfeito.
+        """)
+
+    with st.expander("🎞️ Como editar um vídeo com a Timeline", expanded=False):
+        st.markdown("""
+        ### Edição segmentada por tempo (Timeline)
+        A timeline permite aplicar diferentes efeitos em momentos específicos do vídeo.
+        
+        **Passo a passo:**
+        1. Carregue um vídeo na barra lateral.
+        2. Vá para a aba **🎞️ Editor de Vídeo**.
+        3. Na seção **⏱️ EFEITOS POR TEMPO (TIMELINE)**:
+           - Clique em **➕ Adicionar segmento de efeito**.
+           - Defina o **Início** e **Fim** do trecho (em segundos).
+           - Escolha o **Tipo de Efeito** (Filtro, Moldura ou Animação).
+           - Configure os parâmetros do efeito (ex: selecione o filtro Vintage e ajuste a intensidade).
+           - Clique em **Adicionar Segmento**.
+        4. Repita para outros trechos. Você verá uma barra colorida representando cada segmento.
+        5. Opcionalmente, use os controles de **Corte & Efeitos Globais** para aplicar um corte final ou filtros que afetam o vídeo inteiro.
+        6. Clique em **💾 Exportar com Timeline + Filtros Globais** para gerar o vídeo final.
+        
+        **Dica:** Você pode remover um segmento clicando no **✖️** ao lado dele.
+        """)
+
+    with st.expander("🎨 Aplicando Filtros e Molduras em Imagens", expanded=False):
+        st.markdown("""
+        ### Edição de imagens e frames de vídeo
+        - Após carregar uma imagem ou extrair um frame do vídeo, vá para **🎨 Filtros & Molduras**.
+        - No painel esquerdo, expanda **🌈 FILTROS DE COR** e selecione um ou mais filtros. Ajuste os parâmetros conforme desejar.
+        - Em **🖼️ MOLDURA**, escolha um estilo e configure cor/espessura.
+        - Em **✍️ TEXTO NA IMAGEM**, adicione um texto personalizado com fonte, cor e contorno.
+        - A **pré-visualização ao vivo** mostra as alterações em tempo real.
+        - Ao final, use os botões **💾 PNG**, **💾 JPG** ou **💾 WEBP** para baixar a imagem editada.
+        """)
+
+    with st.expander("🤖 Usando a IA (TTS e Transcrição)", expanded=False):
+        st.markdown("""
+        ### Texto para Fala (TTS)
+        1. Na aba **🤖 IA & Áudio**, sub-aba **🗣️ Texto → Áudio**.
+        2. Digite ou cole o texto que deseja narrar.
+        3. Selecione uma voz neural em português.
+        4. Ajuste a velocidade e clique em **🔊 GERAR NARRAÇÃO**.
+        5. Ouça o resultado e faça o download do MP3.
+        
+        ### Transcrição com Whisper
+        1. Carregue um arquivo de áudio na barra lateral.
+        2. Na sub-aba **🎧 Transcrição**, clique em **📝 TRANSCREVER**.
+        3. Aguarde o processamento (pode levar alguns segundos). O texto aparecerá editável.
+        4. Você pode baixar o TXT ou usá-lo para gerar prompts de IA na sub-aba **📊 Análise & Prompts**.
+        """)
+
+    with st.expander("🎬 Criando GIFs Animados", expanded=False):
+        st.markdown("""
+        ### Como criar um GIF a partir de uma imagem
+        1. Tenha uma imagem carregada ou um frame extraído do vídeo.
+        2. Vá para **🎬 Animações & GIF**.
+        3. Selecione um ou mais efeitos de animação (Girar, Zoom, Glitch, etc.).
+        4. Ajuste a duração e FPS do GIF.
+        5. Clique em **🎬 GERAR GIF**.
+        6. Visualize o resultado e faça o download.
+        """)
+
+    with st.expander("📸 Captura de Tela (Screenshot)", expanded=False):
+        st.markdown("""
+        - **Upload Manual**: envie um print já salvo no computador.
+        - **URL via API**: use o ScreenshotMachine (necessário API key gratuita) para capturar páginas web.
+        - **Câmera/Webcam**: tire uma foto diretamente pelo navegador.
+        
+        Após capturar, você pode aplicar uma edição rápida (brilho, contraste, filtro) e depois usar a imagem como base para as outras abas.
+        """)
+
+    with st.expander("🎼 Montagem Automática com IA", expanded=False):
+        st.markdown("""
+        ### Organizador de Montagem
+        1. Faça upload de várias imagens (geradas por IA, por exemplo).
+        2. Opcionalmente, carregue um áudio de fundo.
+        3. O sistema calcula automaticamente a duração de cada slide.
+        4. Clique em **📄 Gerar Roteiro de Montagem** para obter um arquivo TXT com a sequência e instruções para editores como CapCut/Premiere.
+        
+        ### Prompts Musicais
+        Na sub-aba **🎵 Prompts para IAs de Áudio**, escolha um perfil musical e gere prompts prontos para ferramentas como Suno AI e Udio.
+        """)
+
+# ==============================================================================
+# ABAS PRINCIPAIS (COM TOOLTIPS MELHORADOS)
+# ==============================================================================
+
+def tab_video():
+    st.markdown('<div class="stitle">🎞️ EDITOR DE VÍDEO</div>', unsafe_allow_html=True)
+
+    clip = st.session_state.video_clip
+
+    if clip is None:
+        st.markdown(f"""
+        <div class="card cl">
+        <b>🎬 Envie um vídeo</b> pela barra lateral para usar o editor.<br>
+        Formatos: MP4, MOV, AVI, MKV, WEBM<br>
+        Suporte: <b>{'✅ MoviePy ativo' if VIDEO_SUPPORT else '❌ instale: pip install moviepy imageio-ffmpeg'}</b>
+        </div>
+        """, unsafe_allow_html=True)
+        st.info("💡 **Dica:** Você também pode começar com uma imagem. A edição de vídeo só aparece após o upload.")
+        return
+
+    dur = float(clip.duration)
+
+# --- Substituição do Player Original e Frames ---
+    st.markdown('<div class="vbox">', unsafe_allow_html=True)
+    st.markdown('<div class="vbox-title">▶️ PLAYER DO VÍDEO ORIGINAL</div>', unsafe_allow_html=True)
+    
+    # Colunas para centralizar o player de vídeo
+    col_v1, col_v2, col_v3 = st.columns([1, 2, 1])
+    with col_v2:
+        if st.session_state.video_path and os.path.exists(st.session_state.video_path):
+            with open(st.session_state.video_path, "rb") as f:
+                vbytes_orig = f.read()
+            st.video(vbytes_orig) 
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.markdown("### 🎯 NAVEGAÇÃO DE FRAMES")
+    st.caption("Extraia um frame específico para editar como imagem (útil para thumbnails ou efeitos pontuais).")
+    
+    col_fr1, col_fr2, col_fr3 = st.columns([2,1,1])
+    with col_fr1:
+        t_frame = st.slider("Segundo do frame:", 0.0, dur-0.1,
+                             st.session_state._current_frame_sec, 0.1, key="frame_slider",
+                             help="Deslize para escolher o instante exato do frame.")
+    with col_fr2:
+        if st.button("📷 Extrair Frame", type="primary", key="extract_frame_btn",
+                     help="Clique para extrair o frame selecionado e usá-lo nas abas de imagem."):
+            frame = extract_frame(clip, t_frame)
+            if frame:
+                st.session_state.video_frame = frame
+                st.session_state.base_image = frame
+                st.session_state._current_frame_sec = t_frame
+                st.session_state.processed_image = None
+                st.success(f"Frame em {t_frame:.1f}s extraído!")
+    with col_fr3:
+        st.metric("Duração total", f"{dur:.1f}s")
+
+    if st.session_state.video_frame:
+        col_img1, col_img2, col_img3 = st.columns([1, 2, 1])
+        with col_img2:
+            st.image(st.session_state.video_frame,
+                    caption=f"Frame em {st.session_state._current_frame_sec:.1f}s — use na aba Filtros!",
+                    use_container_width=False)
+        st.markdown("<br>", unsafe_allow_html=True)  # <-- Adicionar esta linha
+
+    st.markdown("---")
+    st.markdown("### ⏱️ EFEITOS POR TEMPO (TIMELINE)")
+    st.caption("Adicione segmentos de tempo e configure filtros/molduras que serão aplicados apenas nesses trechos.")
+
+    segments = st.session_state.effect_segments
+    
+    # Exibir timeline visual
+    if segments:
+        st.markdown("**Segmentos ativos:**")
+        cols = st.columns(20)
+        for i, col in enumerate(cols):
+            t = i * dur / 20
+            col.markdown(f"<small>{t:.0f}s</small>", unsafe_allow_html=True)
+        timeline_html = '<div class="timeline-bar">'
+        for seg in sorted(segments, key=lambda x: x["start"]):
+            left = (seg["start"] / dur) * 100
+            width = ((seg["end"] - seg["start"]) / dur) * 100
+            color = "#00e5ff" if seg["type"] == "Filtro" else ("#ff4d6d" if seg["type"] == "Moldura" else "#a8ff3e")
+            timeline_html += f'<div class="timeline-segment" style="width:{width}%; left:{left}%; background:{color};" title="{seg["type"]}: {seg["start"]:.1f}s-{seg["end"]:.1f}s">{seg["type"][0]}</div>'
+        timeline_html += '</div>'
+        st.markdown(timeline_html, unsafe_allow_html=True)
+
+        # Lista de segmentos com opção de remover
+        for i, seg in enumerate(segments):
+            cols = st.columns([2,1,1,1])
+            cols[0].write(f"{seg['start']:.1f}s → {seg['end']:.1f}s")
+            cols[1].write(seg['type'])
+            if seg['type'] == 'Filtro':
+                filtros = list(seg.get('params',{}).keys())
+                cols[2].write(f"Filtros: {', '.join(filtros)}")
+            elif seg['type'] == 'Moldura':
+                cols[2].write(f"Moldura: {seg['params'].get('tipo','N/A')}")
+            if cols[3].button("✖️", key=f"del_seg_{i}", help="Remover este segmento"):
+                segments.pop(i)
+                st.rerun()
+    else:
+        st.info("👆 Nenhum segmento de efeito definido. Adicione abaixo para começar a edição por tempo.")
+
+    # Adicionar novo segmento
+    with st.expander("➕ Adicionar segmento de efeito", expanded=True):
+        c1, c2 = st.columns(2)
+        start = c1.number_input("Início (s)", 0.0, dur, 0.0, 0.5, key="seg_start",
+                                help="Momento em que o efeito começa.")
+        end = c2.number_input("Fim (s)", 0.0, dur, min(dur, start+2.0), 0.5, key="seg_end",
+                              help="Momento em que o efeito termina.")
+        etype = st.selectbox("Tipo de Efeito", ["Filtro", "Moldura", "Animação"], key="seg_type",
+                             help="Escolha qual categoria de efeito aplicar.")
+        params = {}
+        if etype == "Filtro":
+            sels = st.multiselect("Selecione os filtros:", list(FILTER_DB.keys()), key="seg_filtros",
+                                  help="Escolha um ou mais filtros para este trecho.")
+            filtro_cfg = {}
+            for fn in sels:
+                with st.expander(f"Configurar {fn}"):
+                    filtro_cfg[fn] = {}
+                    for pname, (pmin, pmax, pdef) in FILTER_DB[fn]["params"].items():
+                        filtro_cfg[fn][pname] = st.slider(pname, pmin, pmax, pdef, key=f"seg_f_{fn}_{pname}",
+                                                          help=f"Ajuste a intensidade de {pname}.")
+            params = filtro_cfg
+        elif etype == "Moldura":
+            fsel = st.selectbox("Escolha a moldura:", list(FRAME_DB.keys()), key="seg_frame")
+            params = {
+                "tipo": fsel,
+                "cor": st.color_picker("Cor", FRAME_DB[fsel].get("cor","#FFFFFF"), key="seg_fcor"),
+                "espessura": st.slider("Espessura", FRAME_DB[fsel].get("min",3), FRAME_DB[fsel].get("max",50), 15, key="seg_fesp")
+            }
+        else:  # Animação
+            anim_sel = st.selectbox("Animação", list(ANIMATION_DB.keys()), key="seg_anim")
+            params = {"tipo": anim_sel}
+            # Parâmetros adicionais podem ser incluídos aqui se desejar controle fino
+            # Por enquanto, usamos os valores padrão da animação (já aplicados em apply_animation_to_frame)
+        if st.button("Adicionar Segmento", key="add_seg_btn",
+                     help="Clique para incluir este trecho na timeline."):
+            segments.append({"start": start, "end": end, "type": etype, "params": params})
+            st.rerun()
+
+    st.markdown("---")
+    st.markdown("### ✂️ CORTE & EFEITOS GLOBAIS (opcional)")
+    st.caption("Aplicam-se ao vídeo inteiro ou ao corte definido, além dos efeitos da timeline.")
+
+    col_e1, col_e2 = st.columns(2)
+    with col_e1:
+        t_start = st.number_input("▶ Início (s)", 0.0, dur-0.1, 0.0, 0.5, key="v_start",
+                                  help="Define o ponto de corte inicial (0 = início do vídeo).")
+        t_end   = st.number_input("⏹ Fim (s)",   0.1, dur,     dur,  0.5, key="v_end",
+                                  help="Define o ponto de corte final.")
+    with col_e2:
+        sels_vf = st.multiselect("🎨 Filtros visuais globais:",
+                                 list(FILTER_DB.keys()),
+                                 format_func=lambda x: f"{FILTER_DB[x]['icon']} {x}",
+                                 key="vid_flt_sel",
+                                 help="Filtros aplicados ao vídeo todo (após a timeline).")
+        vid_filter_cfg = {}
+        for fn in sels_vf:
+            vid_filter_cfg[fn] = {p: float(pdef) for p,(_,_,pdef) in FILTER_DB[fn].get("params",{}).items()}
+
+    col_b1, col_b2, col_b3 = st.columns(3)
+    with col_b1:
+        if st.button("▶️ Preview (5s)", type="secondary", key="v_prev5",
+                     help="Gera uma prévia de 5 segundos a partir do início do corte, já com todos os efeitos aplicados."):
+            with st.spinner("Processando preview 5s..."):
+                # 1. Aplica os segmentos de efeito (timeline)
+                processed = apply_effects_to_clip(clip, segments)
+                # 2. Aplica filtros globais (se selecionados)
+                if sels_vf:
+                    processed = clip_fl_image(
+                        processed,
+                        lambda f: np.array(apply_filters(Image.fromarray(f), vid_filter_cfg))
+                    )
+                # 3. Aplica corte de 5 segundos
+                pclip = clip_subclip(processed, t_start, min(t_start + 5, t_end))
+                # 4. Exporta para preview
+                data = export_clip(pclip)
+                if data:
+                    st.session_state._preview_video = data
+                    st.success("Preview pronto!")
+
+    with col_b2:
+        if st.button("📐 Corte Simples", type="secondary", key="v_cut_only",
+                     help="Exporta apenas o trecho cortado, sem efeitos da timeline ou globais."):
+            with st.spinner("Cortando vídeo..."):
+                exp_clip = clip_subclip(clip, t_start, t_end)
+                data = export_clip(exp_clip)
+                if data:
+                    st.session_state._export_video = data
+                    st.success("Corte exportado!")
+
+    with col_b3:
+        if st.button("💾 Exportar Completo", type="primary", key="v_exp_full",
+                     help="Renderiza o vídeo final com timeline, filtros globais e corte."):
+            with st.spinner(f"Exportando vídeo com todos os efeitos..."):
+                # 1. Aplica segmentos da timeline
+                processed = apply_effects_to_clip(clip, segments)
+                # 2. Aplica filtros globais
+                if sels_vf:
+                    processed = clip_fl_image(
+                        processed,
+                        lambda f: np.array(apply_filters(Image.fromarray(f), vid_filter_cfg))
+                    )
+                # 3. Aplica corte final
+                if t_start > 0 or t_end < dur:
+                    processed = clip_subclip(processed, t_start, t_end)
+                # 4. Exporta
+                data = export_clip(processed)
+                if data:
+                    st.session_state._export_video = data
+                    st.success("Exportado com sucesso!")
+                    
+# --- Substituição do Preview e Download Final ---
+    if st.session_state._preview_video:
+        st.markdown("---")
+        st.markdown('<div class="vbox" style="border-color: var(--c2);">', unsafe_allow_html=True)
+        st.markdown('<div class="vbox-title" style="color: var(--c2);">👁️ PREVIEW DO CORTE + FILTROS (5s)</div>', unsafe_allow_html=True)
+        
+        # Centralização do vídeo de preview
+        col_p1, col_p2, col_p3 = st.columns([1, 2, 1])
+        with col_p2:
+            st.video(st.session_state._preview_video)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    if st.session_state._export_video:
+        st.markdown("---")
+        st.success("✅ Vídeo pronto para download!")
+        st.download_button(
+            "⬇️ BAIXAR MP4 EDITADO",
+            st.session_state._export_video,
+            f"{st.session_state.project_name}_editado.mp4",
+            "video/mp4",
+            use_container_width=True,
+            key="dl_mp4_final"
+        )
+        
+def tab_filtros():
+    st.markdown('<div class="stitle">🎨 FILTROS & MOLDURAS & TEXTO</div>', unsafe_allow_html=True)
+
+    source = get_source_image()
+    if source is None:
+        st.markdown("""
+        <div class="card cl">
+        📂 <b>Nenhuma mídia carregada.</b><br>
+        • Envie uma <b>imagem</b> pela barra lateral, ou<br>
+        • Envie um <b>vídeo</b> e extraia um frame na aba "Editor de Vídeo"
+        </div>
+        """, unsafe_allow_html=True)
+        st.info("💡 **Dica:** Você pode editar frames do vídeo! Vá em Editor de Vídeo > Extrair Frame.")
+        return
+
+    if st.session_state.video_clip is not None and st.session_state.video_frame is not None:
+        st.markdown(f"""
+        <div class="card co">
+        🎬 Editando <b>frame do vídeo</b> em {st.session_state._current_frame_sec:.1f}s.
+        Mude o frame na aba "Editor de Vídeo" e clique "Extrair Frame".
+        </div>
+        """, unsafe_allow_html=True)
+
+    cfg = st.session_state.config
+    col_ctrl, col_prev = st.columns([1, 1], gap="medium")
+
+    with col_ctrl:
+        with st.expander("🌈 FILTROS DE COR", expanded=True):
+            st.caption("Selecione e ajuste os filtros. As alterações aparecem à direita.")
+            sels = st.multiselect(
+                "Selecione filtros:",
+                list(FILTER_DB.keys()),
+                format_func=lambda x: f"{FILTER_DB[x]['icon']} {x}",
+                key="filter_sel",
+                help="Escolha um ou mais filtros para aplicar à imagem."
+            )
+            cfg["filtros"] = {}
+            for fn in sels:
+                fi = FILTER_DB[fn]
+                with st.expander(f"{fi['icon']} {fn} — {fi['desc']}", expanded=True):
+                    cfg["filtros"][fn] = {}
+                    for pname, (pmin, pmax, pdef) in fi.get("params",{}).items():
+                        val = st.slider(
+                            pname.capitalize(),
+                            float(pmin), float(pmax), float(pdef),
+                            key=f"fp_{fn}_{pname}",
+                            help=f"Ajuste a intensidade de {pname}."
+                        )
+                        cfg["filtros"][fn][pname] = val
+
+        with st.expander("⚙️ AJUSTES BÁSICOS", expanded=False):
+            st.caption("Brilho, contraste, saturação e nitidez.")
+            bright   = st.slider("☀️ Brilho",    0.3, 2.5, 1.0, 0.05, key="adj_bright")
+            contrast = st.slider("◑ Contraste",  0.3, 2.5, 1.0, 0.05, key="adj_contrast")
+            color    = st.slider("🎨 Saturação",  0.0, 3.0, 1.0, 0.05, key="adj_color")
+            sharp    = st.slider("🔍 Nitidez",    0.0, 3.0, 1.0, 0.05, key="adj_sharp")
+            cfg["ajustes"] = {"bright":bright,"contrast":contrast,"color":color,"sharp":sharp}
+
+        with st.expander("🖼️ MOLDURA", expanded=False):
+            st.caption("Adicione uma borda decorativa.")
+            sel_frame = st.selectbox(
+                "Tipo de moldura:",
+                list(FRAME_DB.keys()),
+                format_func=lambda x: f"{FRAME_DB[x]['icon']} {x}",
+                key="frame_sel"
+            )
+            cfg["moldura"] = {"tipo": sel_frame}
+            if sel_frame != "Nenhuma":
+                fi = FRAME_DB[sel_frame]
+                cfg["moldura"]["cor"] = st.color_picker(
+                    "Cor", fi.get("cor","#FFFFFF"), key="frame_cor")
+                cfg["moldura"]["espessura"] = st.slider(
+                    "Espessura",
+                    fi.get("min",3), fi.get("max",50),
+                    fi.get("min",3) + (fi.get("max",50)-fi.get("min",3))//3,
+                    key="frame_esp"
+                )
+
+        with st.expander("✍️ TEXTO NA IMAGEM", expanded=False):
+            st.caption("Insira um texto personalizado.")
+            cfg["texto"] = st.text_input("Texto:", placeholder="Seu texto aqui...", key="text_inp")
+            if cfg["texto"]:
+                col_t1, col_t2 = st.columns(2)
+                with col_t1:
+                    cfg["fonte"] = {
+                        "tamanho": st.slider("Tamanho", 10, 200, 42, key="fnt_sz"),
+                        "cor": st.color_picker("Cor", "#FFFFFF", key="fnt_cor"),
+                        "tipo": "Padrão"
+                    }
+                with col_t2:
+                    cfg["posicao"] = {
+                        "horizontal": st.selectbox("Horizontal:",
+                            ["Esquerda","Centro","Direita"], index=1, key="pos_h"),
+                        "vertical": st.selectbox("Vertical:",
+                            ["Topo","Meio","Base"], index=2, key="pos_v"),
+                    }
+                    cfg["contorno"] = {
+                        "ativo": st.checkbox("Contorno", value=True, key="ctr_on"),
+                        "cor": st.color_picker("Cor contorno", "#000000", key="ctr_cor"),
+                        "espessura": st.slider("Espessura contorno", 1, 6, 2, key="ctr_esp"),
+                    }
+
+    with col_prev:
+        st.markdown("### 👁️ PREVIEW AO VIVO")
+        processed = source.copy()
+        adj = cfg.get("ajustes", {})
+        if adj.get("bright",1.0) != 1.0:
+            processed = ImageEnhance.Brightness(processed).enhance(adj["bright"])
+        if adj.get("contrast",1.0) != 1.0:
+            processed = ImageEnhance.Contrast(processed).enhance(adj["contrast"])
+        if adj.get("color",1.0) != 1.0:
+            processed = ImageEnhance.Color(processed).enhance(adj["color"])
+        if adj.get("sharp",1.0) != 1.0:
+            processed = ImageEnhance.Sharpness(processed).enhance(adj["sharp"])
+        if cfg.get("filtros"):
+            processed = apply_filters(processed, cfg["filtros"])
+        if cfg.get("moldura",{}).get("tipo","Nenhuma") != "Nenhuma":
+            processed = apply_frame(processed, cfg["moldura"])
+        if cfg.get("texto"):
+            processed = apply_text(processed, cfg)
+        st.session_state.processed_image = processed
+
+        col_ba, col_dp = st.columns(2)
+        with col_ba:
+            st.image(source, caption="📷 Original", use_container_width=True)
+        with col_dp:
+            st.image(processed, caption="✨ Com Efeitos", use_container_width=True)
+
+        st.markdown("---")
+        st.markdown("**📥 EXPORTAR IMAGEM:**")
+        col_e1, col_e2, col_e3 = st.columns(3)
+        with col_e1:
+            st.download_button("💾 PNG",
+                img_to_bytes(processed,"PNG"),
+                f"{st.session_state.project_name}.png","image/png",
+                use_container_width=True, key="dl_png")
+        with col_e2:
+            st.download_button("💾 JPG",
+                img_to_bytes(processed,"JPEG",93),
+                f"{st.session_state.project_name}.jpg","image/jpeg",
+                use_container_width=True, key="dl_jpg")
+        with col_e3:
+            st.download_button("💾 WEBP",
+                img_to_bytes(processed,"WEBP",90),
+                f"{st.session_state.project_name}.webp","image/webp",
+                use_container_width=True, key="dl_webp")
+
+def tab_animacoes():
+    st.markdown('<div class="stitle">🎬 ANIMAÇÕES & GIF ANIMADO</div>', unsafe_allow_html=True)
+
+    base = get_work_image()
+    if base is None:
+        st.markdown("""
+        <div class="card cl">
+        🎬 <b>Para criar animações:</b><br>
+        • Envie uma <b>imagem</b> pela barra lateral, ou<br>
+        • Extraia um <b>frame do vídeo</b> na aba "Editor de Vídeo"<br>
+        • Depois aplique filtros na aba "Filtros" (opcional)
+        </div>
+        """, unsafe_allow_html=True)
+        return
+
+    col_c, col_p = st.columns([1, 1], gap="medium")
+
+    with col_c:
+        st.markdown("### 🎭 CONFIGURAR ANIMAÇÃO")
+        sels = st.multiselect(
+            "Escolha os efeitos de animação:",
+            list(ANIMATION_DB.keys()),
+            format_func=lambda x: f"{ANIMATION_DB[x]['icon']} {x} — {ANIMATION_DB[x]['desc']}",
+            key="anim_sel",
+            help="Selecione um ou mais efeitos que serão combinados."
+        )
+        st.markdown("#### ⚙️ Configurações Gerais")
+        duracao  = st.slider("⏱️ Duração (segundos)", 0.5, 8.0, 2.0, 0.5, key="anim_dur",
+                             help="Tempo total da animação.")
+        fps_gif  = st.slider("🎞️ FPS do GIF", 8, 30, 15, 1, key="anim_fps",
+                             help="Quadros por segundo. Valores maiores = animação mais suave.")
+        loop_gif = st.selectbox("🔁 Loop", ["Infinito","1x","3x"], key="anim_loop",
+                                help="Define quantas vezes o GIF se repetirá.")
+
+        if sels:
+            st.markdown("#### 📋 Efeitos selecionados:")
+            for s in sels:
+                ai = ANIMATION_DB[s]
+                st.markdown(f"• {ai['icon']} **{s}** — {ai['desc']}")
+
+        col_gb1, col_gb2 = st.columns(2)
+        with col_gb1:
+            gen_btn = st.button("🎬 GERAR GIF", type="primary",
+                                key="gen_gif_btn", use_container_width=True,
+                                help="Clique para criar o GIF com as configurações atuais.")
+        with col_gb2:
+            prev_btn = st.button("👁️ Preview Frame", type="secondary",
+                                 key="prev_frame_btn", use_container_width=True,
+                                 help="Mostra uma prévia estática do meio da animação.")
+
+        if prev_btn:
+            p = 0.5
+            test_frame = base.copy().convert("RGBA")
+            if "Girar" in sels:
+                test_frame = test_frame.rotate(180, resample=Image.BILINEAR)
+            if "Glitch" in sels:
+                arr = np.array(test_frame)
+                for _ in range(5):
+                    y = random.randint(0,test_frame.height-1)
+                    arr[y,:] = np.roll(arr[y,:], random.randint(-15,15), axis=0)
+                test_frame = Image.fromarray(arr)
+            st.image(test_frame.convert("RGB"), caption="Preview frame do meio", use_container_width=True)
+
+        if gen_btn:
+            if not sels:
+                st.warning("⚠️ Selecione ao menos um efeito de animação.")
+            else:
+                anim_cfg = {s:{} for s in sels}
+                with st.spinner(f"Gerando GIF ({duracao}s, ~{int(duracao*fps_gif)} frames)..."):
+                    gif_data = make_gif(base, anim_cfg, duracao)
+                    st.session_state._gif_data = gif_data
+                    st.success(f"✅ GIF gerado! ({len(gif_data)//1024} KB)")
+
+    with col_p:
+        st.markdown("### 🖼️ RESULTADO")
+        if st.session_state._gif_data:
+            b64 = base64.b64encode(st.session_state._gif_data).decode()
+            st.markdown(
+                f'<img src="data:image/gif;base64,{b64}" '
+                f'style="max-width:100%;border-radius:12px;'
+                f'border:2px solid rgba(0,229,255,.4);'
+                f'box-shadow:0 0 20px rgba(0,229,255,.2);"/>',
+                unsafe_allow_html=True
+            )
+            st.markdown(f"**Tamanho:** {len(st.session_state._gif_data)//1024} KB")
+            st.download_button(
+                "⬇️ BAIXAR GIF",
+                st.session_state._gif_data,
+                f"{st.session_state.project_name}_animacao.gif",
+                "image/gif",
+                use_container_width=True,
+                key="dl_gif_final"
+            )
+        else:
+            st.image(base, caption="Imagem base — aguardando geração do GIF",
+                     use_container_width=True)
+            st.markdown("""
+            <div class="card cg">
+            💡 <b>Dica:</b> Você pode combinar múltiplos efeitos!<br>
+            Ex: Zoom + Glitch + Piscar = efeito cinematográfico único.
+            </div>
+            """, unsafe_allow_html=True)
+
+def tab_screenshot():
+    st.markdown('<div class="stitle">📸 CAPTURA DE TELA</div>', unsafe_allow_html=True)
+
+    modo = st.radio("Modo:", ["📁 Upload Manual", "🌐 URL via API", "📷 Câmera/Webcam"],
+                    horizontal=True, key="ss_modo",
+                    help="Escolha como deseja obter a imagem.")
+
+    if modo == "📁 Upload Manual":
+        st.markdown("""
+        <div class="card co">
+        💡 Faça uma captura de tela no seu sistema e envie abaixo.
+        </div>
+        """, unsafe_allow_html=True)
+        f = st.file_uploader("Envie seu screenshot:", type=["png","jpg","jpeg","webp"],
+                             key="ss_upload")
+        if f:
+            img = Image.open(f)
+            st.session_state.screenshot_data = img
+            st.session_state.base_image = img
+            st.success("✅ Screenshot carregado! Disponível em Filtros & Animações.")
+            st.image(img, use_container_width=True)
+
+    elif modo == "🌐 URL via API":
+        st.markdown("""
+        <div class="card cl">
+        Use a API do <b>ScreenshotMachine</b> ou similar.
+        </div>
+        """, unsafe_allow_html=True)
+        api_key = st.text_input("🔑 API Key:", type="password", key="ss_api",
+                                help="Obtenha uma chave gratuita em screenshotmachine.com")
+        url_in  = st.text_input("🌐 URL da página:", placeholder="https://exemplo.com", key="ss_url")
+        col_w, col_h = st.columns(2)
+        with col_w: sw = st.selectbox("Largura:", [1280,1920,1024,800], key="ss_w")
+        with col_h: sh = st.selectbox("Altura:",  [720,1080,768,600],  key="ss_h")
+
+        if st.button("📸 Capturar", type="primary", key="ss_cap"):
+            if url_in and api_key:
+                with st.spinner("Capturando screenshot..."):
+                    try:
+                        api = (f"https://api.screenshotmachine.com"
+                               f"?key={api_key}&url={url_in}"
+                               f"&dimension={sw}x{sh}&format=png&cacheLimit=0")
+                        r = requests.get(api, timeout=30)
+                        if r.status_code == 200 and "image" in r.headers.get("content-type",""):
+                            img = Image.open(BytesIO(r.content))
+                            st.session_state.screenshot_data = img
+                            st.session_state.base_image = img
+                            st.success("✅ Screenshot capturado!")
+                            st.image(img, use_container_width=True)
+                        else:
+                            st.error("API retornou erro. Verifique a chave.")
+                    except Exception as e:
+                        st.error(f"Erro: {e}")
+            elif not api_key:
+                st.warning("Informe a API Key.")
+            elif not url_in:
+                st.warning("Informe a URL.")
+
+    else:
+        st.markdown("""
+        <div class="card cg">
+        📷 Tire uma foto da sua tela com a câmera.
+        </div>
+        """, unsafe_allow_html=True)
+        cam = st.camera_input("Tire uma foto:", key="ss_cam")
+        if cam:
+            img = Image.open(cam)
+            st.session_state.screenshot_data = img
+            st.session_state.base_image = img
+            st.success("✅ Foto capturada! Disponível em Filtros & Animações.")
+
+    if st.session_state.screenshot_data:
+        st.markdown("---")
+        st.markdown('<div class="stitle">🎨 EDIÇÃO RÁPIDA DO SCREENSHOT</div>', unsafe_allow_html=True)
+        img = st.session_state.screenshot_data
+
+        col_q, col_pv = st.columns([1, 2])
+        with col_q:
+            qf = st.selectbox("Filtro rápido:", ["Nenhum"] + list(FILTER_DB.keys()), key="ss_qf")
+            bright   = st.slider("☀️ Brilho",   0.3, 2.5, 1.0, 0.05, key="ss_bright")
+            contrast = st.slider("◑ Contraste", 0.3, 2.5, 1.0, 0.05, key="ss_contrast")
+            sharp    = st.slider("🔍 Nitidez",   0.3, 3.0, 1.0, 0.05, key="ss_sharp")
+            annot    = st.text_input("📝 Anotação:", placeholder="Adicione texto...", key="ss_annot")
+            acor     = st.color_picker("Cor da anotação:", "#FF2244", key="ss_acor")
+            apos_h   = st.selectbox("Posição H:", ["Esquerda","Centro","Direita"], index=1, key="ss_ah")
+            apos_v   = st.selectbox("Posição V:", ["Topo","Meio","Base"], index=2, key="ss_av")
+
+        with col_pv:
+            edited = img.copy()
+            edited = ImageEnhance.Brightness(edited).enhance(bright)
+            edited = ImageEnhance.Contrast(edited).enhance(contrast)
+            edited = ImageEnhance.Sharpness(edited).enhance(sharp)
+            if qf != "Nenhum":
+                fc = {p: float(pdef) for p,(_,_,pdef) in FILTER_DB[qf].get("params",{}).items()}
+                edited = apply_filters(edited, {qf: fc})
+            if annot:
+                edited = apply_text(edited, {
+                    "texto": annot,
+                    "fonte": {"tamanho":32,"cor":acor,"tipo":"Padrão"},
+                    "posicao": {"horizontal":apos_h,"vertical":apos_v},
+                    "contorno": {"ativo":True,"cor":"#000000","espessura":2},
+                })
+            st.image(edited, caption="Screenshot editado", use_container_width=True)
+
+            col_dl1, col_dl2 = st.columns(2)
+            with col_dl1:
+                st.download_button("⬇️ PNG",
+                    img_to_bytes(edited,"PNG"),
+                    "screenshot_editado.png","image/png",
+                    use_container_width=True, key="dl_ss_png")
+            with col_dl2:
+                if st.button("📋 Usar como base p/ Filtros", key="ss_to_base",
+                             help="Define esta imagem como a imagem base para as outras abas."):
+                    st.session_state.base_image = edited
+                    st.session_state.processed_image = None
+                    st.success("✅ Screenshot definido como imagem base!")
+
+def tab_ia_audio():
+    st.markdown('<div class="stitle">🤖 IA & ÁUDIO</div>', unsafe_allow_html=True)
+    sub1, sub2, sub3 = st.tabs(["🗣️ Texto → Áudio (TTS)", "🎧 Transcrição", "📊 Análise & Prompts"])
+
+    with sub1:
+        st.markdown("**Converta texto em narração neural PT-BR com edge-tts**")
+        if not TTS_SUPPORT:
+            st.error("❌ edge-tts não instalado. Execute: `pip install edge-tts`")
+            return
+
+        col_tv, col_ts = st.columns([2,1])
+        with col_tv:
+            tts_text = st.text_area("Texto para narrar:", height=180,
+                                    placeholder="Digite ou cole o texto aqui...",
+                                    key="tts_ta",
+                                    help="Insira o texto que será convertido em fala.")
+        with col_ts:
+            vk = st.selectbox("Voz:", list(VOICE_PROFILES.keys()),
+                              format_func=lambda x: VOICE_PROFILES[x]["name"],
+                              key="tts_vk",
+                              help="Escolha entre diferentes vozes neurais.")
+            speed  = st.slider("Velocidade:", 0.5, 2.0, 1.0, 0.05, key="tts_spd",
+                               help="Ajuste a velocidade da fala.")
+            st.markdown(f"**Código:** `{VOICE_PROFILES[vk]['code']}`")
+
+        if st.button("🔊 GERAR NARRAÇÃO", type="primary", key="gen_tts",
+                     use_container_width=True,
+                     help="Clique para gerar o arquivo de áudio."):
+            if tts_text and tts_text.strip():
+                with st.spinner("Gerando narração neural..."):
+                    ok, result = tts_generate(tts_text.strip(), vk, speed)
+                    if ok:
+                        with open(result,"rb") as f:
+                            abytes = f.read()
+                        st.audio(abytes, format="audio/mp3")
+                        st.download_button("⬇️ Baixar MP3",
+                            abytes,
+                            f"narracao_{st.session_state.project_name}.mp3",
+                            "audio/mp3",
+                            use_container_width=True, key="dl_tts_mp3")
+                        st.success("✅ Narração gerada!")
+                    else:
+                        st.error(f"Falha: {result}")
+            else:
+                st.warning("Digite um texto.")
+
+    with sub2:
+        st.markdown("**Transcreva áudio/vídeo para texto com Whisper AI (offline)**")
+        if not WHISPER_SUPPORT:
+            st.error("❌ Whisper não instalado. Execute: `pip install openai-whisper`")
+        else:
+            ap = st.session_state.get("audio_path")
+            if ap and os.path.exists(ap):
+                with open(ap,"rb") as f:
+                    st.audio(f.read(), format="audio/mp3")
+                if st.button("📝 TRANSCREVER", type="primary", key="do_transcribe",
+                             help="Inicia a transcrição. Pode levar alguns segundos."):
+                    with st.spinner("Transcrevendo com Whisper (aguarde)..."):
+                        try:
+                            model = whisper.load_model("base")
+                            result = model.transcribe(ap, language="pt", fp16=False)
+                            st.session_state.transcribed_text = result["text"]
+                            st.success("✅ Transcrição concluída!")
+                        except Exception as e:
+                            st.error(f"Erro: {e}")
+            else:
+                st.info("Envie um arquivo de áudio (MP3/WAV) pela barra lateral.")
+
+        if st.session_state.transcribed_text:
+            st.markdown("---")
+            edited = st.text_area("Texto transcrito (editável):",
+                                  value=st.session_state.transcribed_text,
+                                  height=250, key="transcr_edit",
+                                  help="Você pode editar o texto antes de baixar ou usar em outras ferramentas.")
+            st.session_state.transcribed_text = edited
+            wc = len(edited.split())
+            c1,c2,c3 = st.columns(3)
+            c1.metric("Palavras",   wc)
+            c2.metric("Caracteres", len(edited))
+            c3.metric("Leitura",    f"{round(wc/150,1)} min")
+            st.download_button("⬇️ Baixar TXT",
+                edited.encode("utf-8"),
+                f"transcricao_{st.session_state.project_name}.txt",
+                "text/plain", key="dl_txt")
+
+    with sub3:
+        st.markdown("**Analise seu conteúdo e gere prompts prontos para ChatGPT, Midjourney, Suno...**")
+        text_in = st.text_area("Texto para analisar:",
+                               value=st.session_state.transcribed_text or "",
+                               height=120, key="an_text",
+                               help="Cole ou use o texto transcrito para análise.")
+        col_p1, col_p2, col_p3 = st.columns(3)
+        with col_p1:
+            platform = st.selectbox("Plataforma:",
+                ["YouTube","TikTok/Reels","Instagram","LinkedIn","Site/Blog"], key="plat",
+                help="Para qual plataforma o conteúdo será otimizado?")
+        with col_p2:
+            tone = st.selectbox("Tom:",
+                ["Inspirador","Informativo","Persuasivo","Divertido","Emocional"], key="tone",
+                help="Qual o tom desejado para o conteúdo?")
+        with col_p3:
+            complexity = st.slider("Complexidade:", 1, 5, 3, key="cplx",
+                                   help="Nível de detalhamento dos prompts.")
+
+        if st.button("🔍 ANALISAR & GERAR PROMPTS", type="primary",
+                     key="do_analyze", use_container_width=True,
+                     help="Analisa o texto e gera prompts prontos para IAs."):
+            if text_in.strip():
+                with st.spinner("Analisando..."):
+                    an = analyze_content(text_in.strip())
+                    kws = [w for w in text_in.lower().split() if len(w)>4][:8]
+                    prompts = gen_ai_prompts(an["primary"], kws, platform, tone)
+                    st.session_state.video_analysis = an
+                    st.session_state.enhanced_prompts = prompts
+                    st.session_state.video_analysis_complete = True
+                    st.success("✅ Análise concluída!")
+            else:
+                st.warning("Digite um texto.")
+
+        if st.session_state.video_analysis_complete and st.session_state.video_analysis:
+            an = st.session_state.video_analysis
+            st.markdown("---")
+            st.markdown("**📊 Análise do Conteúdo:**")
+            c1,c2,c3,c4 = st.columns(4)
+            c1.metric("Tema Principal", an["primary"].upper())
+            c2.metric("Palavras",       an["word_count"])
+            c3.metric("Engajamento",    f"{an['engagement']}%")
+            c4.metric("Leitura",        f"{an['reading_min']} min")
+
+            for th, sc in an.get("themes",{}).items():
+                st.progress(min(sc*10,100)/100, text=f"  {th.title()}")
+
+            if st.session_state.enhanced_prompts:
+                st.markdown("---")
+                st.markdown("**✨ Prompts para IA — copie e use em qualquer ferramenta:**")
+                for ptype, pcontent in st.session_state.enhanced_prompts.items():
+                    with st.expander(f"📋 {ptype}", expanded=False):
+                        st.code(pcontent, language="text")
+
+def tab_montagem():
+    st.markdown('<div class="stitle">🎼 MONTAGEM & PROMPTS MUSICAIS</div>', unsafe_allow_html=True)
+    sub_a, sub_b = st.tabs(["🎵 Prompts para IAs de Áudio", "🎬 Organizador de Montagem"])
+
+    with sub_a:
+        st.markdown("**Gere prompts para Suno AI, Udio, ElevenLabs, MusicGen...**")
+        col_t, col_p = st.columns(2)
+        with col_t:
+            tema   = st.selectbox("Tema visual:", list(PERFIS_MUSICAIS.keys()), key="mt_tema",
+                                  help="Escolha o perfil emocional da música.")
+            conceito = st.text_input("Conceito principal:", "superação e conquista", key="mt_conceito",
+                                     help="Descreva brevemente o tema central.")
+            duracao  = st.slider("Duração da trilha (s):", 15, 300, 60, key="mt_dur",
+                                 help="Duração desejada para a trilha sonora.")
+        with col_p:
+            pi = PERFIS_MUSICAIS[tema]
+            st.markdown(f"""
+            <div class="card co">
+            <b>Perfil {tema}</b><br>
+            🎵 BPM: {pi['bpm']}<br>
+            😊 Emoção: {pi['emocao']}<br>
+            🎨 Cores: {' • '.join(pi['cores'])}
+            </div>
+            """, unsafe_allow_html=True)
+
+        if st.button("✨ GERAR PROMPTS", type="primary", key="gen_mp", use_container_width=True,
+                     help="Gera prompts prontos para ferramentas de IA de áudio e imagem."):
+            prompts = {
+                "🎨 Prompt Imagem": (
+                    f"Crie imagem {tema.lower()} sobre '{conceito}'. "
+                    f"Paleta: {' e '.join(pi['cores'])}. Emoção: {pi['emocao']}. "
+                    f"Alta qualidade, composição impactante, formato 16:9."
+                ),
+                "🎵 Prompt Trilha Sonora": (
+                    f"Trilha sonora {tema.lower()} para vídeo.\n"
+                    f"Duração: {duracao}s | BPM: {pi['bpm']} | Emoção: {pi['emocao']}\n"
+                    f"Conceito: {conceito}\n"
+                    f"Progressão: intro → build → clímax → resolução.\n"
+                    f"Sem vocal. Formato MP3."
+                ),
+                "📝 Prompt Texto/Roteiro": (
+                    f"Escreva roteiro {tema.lower()} com emoção {pi['emocao']} sobre '{conceito}'.\n"
+                    f"Estrutura: gancho (20 palavras) → desenvolvimento (150p) → CTA (30p).\n"
+                    f"Tom: {pi['emocao']}."
+                ),
+                "🤖 Prompt ChatGPT": (
+                    f"Você é um especialista em criação de conteúdo {tema.lower()}. "
+                    f"Crie um roteiro completo sobre '{conceito}' com duração de {duracao//60} minutos. "
+                    f"Tom: {pi['emocao']}. Inclua: gancho inicial, 3 pontos principais, conclusão e CTA."
+                ),
+            }
+            st.session_state["_music_prompts"] = {"prompts": prompts, "tema": tema, "bpm": pi["bpm"]}
+
+        if st.session_state.get("_music_prompts"):
+            mp = st.session_state["_music_prompts"]
+            for pk, pv in mp["prompts"].items():
+                with st.expander(f"📋 {pk}", expanded=True):
+                    st.code(pv, language="text")
+            pkg = json.dumps(mp["prompts"], ensure_ascii=False, indent=2)
+            st.download_button("⬇️ Baixar Pacote de Prompts (JSON)",
+                pkg.encode("utf-8"),
+                f"prompts_{mp['tema']}.json",
+                "application/json", key="dl_mp_json")
+
+    with sub_b:
+        st.markdown("**Organize imagens + áudio → plano de montagem automático**")
+        imgs_up  = st.file_uploader("📁 Imagens geradas com IA:",
+                                    type=["png","jpg","jpeg","webp"],
+                                    accept_multiple_files=True, key="mont_imgs",
+                                    help="Selecione várias imagens para criar uma sequência.")
+        audio_up = st.file_uploader("🔊 Áudio da trilha:",
+                                    type=["mp3","wav","m4a"], key="mont_audio",
+                                    help="Opcional: áudio de fundo para a montagem.")
+
+        if imgs_up:
+            n = len(imgs_up)
+            dur_total = n * 6.0
+            slides    = max(3, min(n, int(dur_total/6)))
+            secs_per  = dur_total / slides
+
+            c1,c2,c3 = st.columns(3)
+            c1.metric("Imagens",      n)
+            c2.metric("Slides ideais", slides)
+            c3.metric("Seg/slide",    f"{secs_per:.1f}s")
+
+            st.markdown("**Preview da sequência (primeiras 6):**")
+            thumb_cols = st.columns(min(6, n))
+            for i, (col, f) in enumerate(zip(thumb_cols, imgs_up[:6])):
+                img = Image.open(f)
+                img.thumbnail((160,90))
+                col.image(img, caption=f"#{i+1} {secs_per:.1f}s", use_container_width=True)
+
+            if st.button("📄 Gerar Roteiro de Montagem", type="primary",
+                         key="gen_rot", use_container_width=True,
+                         help="Cria um arquivo TXT com a sequência de slides e instruções para editores."):
+                rot  = f"ROTEIRO DE MONTAGEM — {st.session_state.project_name}\n"
+                rot += f"Gerado: {datetime.now().strftime('%d/%m/%Y %H:%M')}\n"
+                rot += "="*60 + "\n\n"
+                rot += f"Total imagens: {n}\nDuração estimada: {dur_total:.0f}s\n"
+                rot += f"Slides: {slides}\nSeg/slide: {secs_per:.1f}s\n\n"
+                rot += "SEQUÊNCIA:\n"
+                t = 0.0
+                for i in range(slides):
+                    fn = imgs_up[i % n].name
+                    rot += f"  Slide {i+1:02d}: {t:.1f}s → {t+secs_per:.1f}s | {fn}\n"
+                    t += secs_per
+                rot += "\nINSTRUÇÕES:\n"
+                rot += "  1. Abra CapCut / Clipchamp / Premiere\n"
+                rot += "  2. Importe imagens na ordem acima\n"
+                rot += "  3. Ajuste cada slide para a duração indicada\n"
+                rot += "  4. Adicione o áudio como fundo\n"
+                rot += "  5. Transições: dissolve suave (0.3s)\n"
+                rot += "  6. Exporte 1080p MP4 / H.264\n"
+                st.download_button("⬇️ Baixar Roteiro TXT",
+                    rot.encode("utf-8"),
+                    f"roteiro_{st.session_state.project_name}.txt",
+                    "text/plain", use_container_width=True, key="dl_rot")
+                st.success("✅ Roteiro gerado!")
+
+def tab_export():
+    st.markdown('<div class="stitle">📦 EXPORTAÇÃO & STATUS</div>', unsafe_allow_html=True)
+    col_l, col_r = st.columns(2)
+
+    with col_l:
+        st.markdown("**📂 Arquivos disponíveis:**")
+        items = []
+        if st.session_state.processed_image:   items.append("✅ Imagem com efeitos aplicados")
+        if st.session_state.base_image:         items.append("✅ Imagem / Frame base")
+        if st.session_state.video_frame:         items.append("✅ Frame extraído do vídeo")
+        if st.session_state.video_clip:          items.append(f"✅ Vídeo ({st.session_state.video_clip.duration:.1f}s)")
+        if st.session_state.screenshot_data:     items.append("✅ Screenshot capturado")
+        if st.session_state.transcribed_text:    items.append("✅ Transcrição de texto")
+        if st.session_state.enhanced_prompts:    items.append("✅ Prompts de IA")
+        if st.session_state._gif_data:           items.append("✅ GIF animado")
+        if st.session_state._export_video:       items.append("✅ Vídeo exportado")
+        for it in items:
+            st.markdown(f"• {it}")
+        if not items:
+            st.info("Use as abas acima para criar conteúdo.")
+
+    with col_r:
+        st.markdown("**💾 Downloads rápidos:**")
+        if st.session_state.processed_image:
+            img = st.session_state.processed_image
+            col_d1, col_d2 = st.columns(2)
+            with col_d1:
+                st.download_button("⬇️ PNG (alta qualidade)",
+                    img_to_bytes(img,"PNG"),
+                    f"{st.session_state.project_name}.png","image/png",
+                    use_container_width=True, key="exp_png")
+            with col_d2:
+                st.download_button("⬇️ JPG (web)",
+                    img_to_bytes(img,"JPEG",92),
+                    f"{st.session_state.project_name}.jpg","image/jpeg",
+                    use_container_width=True, key="exp_jpg")
+        if st.session_state._gif_data:
+            st.download_button("⬇️ GIF Animado",
+                st.session_state._gif_data,
+                f"{st.session_state.project_name}_anim.gif","image/gif",
+                use_container_width=True, key="exp_gif")
+        if st.session_state._export_video:
+            st.download_button("⬇️ MP4 Editado",
+                st.session_state._export_video,
+                f"{st.session_state.project_name}_editado.mp4","video/mp4",
+                use_container_width=True, key="exp_mp4")
+        if st.session_state.transcribed_text:
+            st.download_button("⬇️ Transcrição (TXT)",
+                st.session_state.transcribed_text.encode("utf-8"),
+                f"transcricao_{st.session_state.project_name}.txt","text/plain",
+                use_container_width=True, key="exp_txt")
+        if st.session_state.enhanced_prompts:
+            st.download_button("⬇️ Prompts de IA (JSON)",
+                json.dumps(st.session_state.enhanced_prompts, ensure_ascii=False, indent=2).encode(),
+                f"prompts_{st.session_state.project_name}.json","application/json",
+                use_container_width=True, key="exp_json")
+
+    st.markdown("---")
+    st.markdown("**📋 Status detalhado do sistema:**")
+    status_items = [
+        ("Versão",               "6.0 (Timeline + Guia)"),
+        ("MoviePy (Vídeo)",      "✅ Ativo" if VIDEO_SUPPORT else "❌ pip install moviepy imageio-ffmpeg"),
+        ("edge-tts (TTS)",       "✅ Ativo" if TTS_SUPPORT else "❌ pip install edge-tts"),
+        ("Whisper (Transcrição)","✅ Ativo" if WHISPER_SUPPORT else "❌ pip install openai-whisper"),
+        ("FFmpeg",               "✅ no PATH" if shutil.which("ffmpeg") else "⚠️ Não no PATH"),
+        ("OpenCV",               "✅"),
+        ("Pillow",               "✅"),
+        ("NumPy",                "✅"),
+    ]
+    col_s1, col_s2 = st.columns(2)
+    half = len(status_items)//2
+    for i,(k,v) in enumerate(status_items):
+        (col_s1 if i < half else col_s2).markdown(f"**{k}:** {v}")
+
+    st.markdown("""
+    <div class="card cg" style="margin-top:1rem;">
+    <b>⚡ Instalação completa:</b><br>
+    <code>pip install streamlit pillow numpy opencv-python requests moviepy imageio-ffmpeg edge-tts openai-whisper</code>
+    </div>
+    """, unsafe_allow_html=True)
+
+# ==============================================================================
+# MAIN
+# ==============================================================================
+def main():
+    render_header()
+    render_sidebar()
+
+    tabs = st.tabs([
+        "🎞️ Editor de Vídeo",
+        "🎨 Filtros & Molduras",
+        "🎬 Animações & GIF",
+        "📸 Screenshot",
+        "🤖 IA & Áudio",
+        "🎼 Montagem",
+        "📦 Exportar",
+        "📖 Ajuda",  # Nova aba de ajuda
+    ])
+
+    with tabs[0]: tab_video()
+    with tabs[1]: tab_filtros()
+    with tabs[2]: tab_animacoes()
+    with tabs[3]: tab_screenshot()
+    with tabs[4]: tab_ia_audio()
+    with tabs[5]: tab_montagem()
+    with tabs[6]: tab_export()
+    with tabs[7]: tab_ajuda()  # Renderiza a nova aba de ajuda
+
+    st.markdown("""
+    <div style="text-align:center;padding:1.5rem;margin-top:2rem;
+                border-top:1px solid rgba(0,229,255,.12);
+                font-family:'JetBrains Mono',monospace;font-size:.72rem;
+                color:rgba(107,114,128,.6);">
+      STUDIO PRO CREATOR AI v6.0 • φ=1.618 • MARC=0.54 • JUBILO=0.45 •
+      <i>Não sou o Nada e não sou o Tudo. Sou o Trajeto.</i>
+    </div>
+    """, unsafe_allow_html=True)
+
+if __name__ == "__main__":
+    main()
