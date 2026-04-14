@@ -2027,9 +2027,543 @@ def tab_ia_audio():
                     with st.expander(f"📋 {ptype}", expanded=False):
                         st.code(pcontent, language="text")
 
+def _get_audio_duration_seconds(audio_bytes: bytes, ext: str) -> float:
+    """Retorna duração do áudio em segundos usando ffprobe ou fallback."""
+    try:
+        import subprocess, tempfile, json as _json
+        with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as f:
+            f.write(audio_bytes)
+            tmp = f.name
+        result = subprocess.run(
+            ["ffprobe","-v","quiet","-print_format","json","-show_streams", tmp],
+            capture_output=True, text=True, timeout=15
+        )
+        data = _json.loads(result.stdout)
+        for s in data.get("streams", []):
+            if "duration" in s:
+                return float(s["duration"])
+    except Exception:
+        pass
+    # fallback: estima pelo tamanho (128kbps MP3 ≈ 16000 bytes/s)
+    return len(audio_bytes) / 16000.0
+
+
+def _calc_wpm_duration(text: str, wpm: int) -> float:
+    """Retorna duração de leitura em segundos para o texto dado o WPM."""
+    words = len(text.split())
+    return (words / max(wpm, 1)) * 60.0
+
+
+def _split_text_by_time(text: str, total_duration: float, wpm: int) -> list:
+    """
+    Divide o texto em blocos proporcionais ao tempo de leitura.
+    Retorna lista de (texto_bloco, inicio_s, fim_s).
+    """
+    words = text.split()
+    if not words:
+        return []
+    total_words = len(words)
+    secs_per_word = total_duration / max(total_words, 1)
+    # agrupa palavras em blocos de ~wpm/4 palavras (chunk de ~15s)
+    chunk_words = max(1, wpm // 4)
+    blocks = []
+    t = 0.0
+    for i in range(0, total_words, chunk_words):
+        chunk = words[i:i+chunk_words]
+        dur = len(chunk) * secs_per_word
+        blocks.append((" ".join(chunk), round(t, 2), round(t + dur, 2)))
+        t += dur
+    return blocks
+
+
+def _render_text_on_image(
+    img: Image.Image,
+    text: str,
+    font_size: int,
+    font_color: str,
+    font_style: str,
+    h_align: str,
+    v_align: str,
+    shadow: bool,
+    shadow_color: str,
+    bold: bool,
+    italic: bool,
+    outline: bool,
+    outline_color: str,
+    outline_w: int,
+    bg_box: bool,
+    bg_box_color: str,
+    bg_box_alpha: int,
+    margin_pct: float = 0.05,
+) -> Image.Image:
+    """Renderiza texto sobre imagem com todas as opções de arte tipográfica."""
+    img = img.convert("RGBA")
+    draw = ImageDraw.Draw(img)
+    W, H = img.size
+
+    # Tenta carregar fonte do sistema
+    font = None
+    font_paths = []
+    if font_style == "Serif":
+        font_paths = ["/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
+                      "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf"]
+    elif font_style == "Mono":
+        font_paths = ["/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+                      "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf"]
+    else:
+        font_paths = ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                      "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+                      "/usr/share/fonts/truetype/freefont/FreeSans.ttf"]
+
+    for fp in font_paths:
+        if os.path.exists(fp):
+            try:
+                font = ImageFont.truetype(fp, font_size)
+                break
+            except Exception:
+                pass
+    if font is None:
+        font = ImageFont.load_default()
+
+    # Wrap text
+    margin_px = int(W * margin_pct)
+    max_w = W - 2 * margin_px
+    lines = []
+    for paragraph in text.split("\n"):
+        words_p = paragraph.split()
+        line = ""
+        for word in words_p:
+            test = (line + " " + word).strip()
+            bbox = draw.textbbox((0, 0), test, font=font)
+            if bbox[2] - bbox[0] <= max_w:
+                line = test
+            else:
+                if line:
+                    lines.append(line)
+                line = word
+        if line:
+            lines.append(line)
+
+    # Total height
+    line_h = font_size + int(font_size * 0.3)
+    total_h = len(lines) * line_h
+
+    # Vertical position
+    if v_align == "Topo":
+        y_start = margin_px
+    elif v_align == "Centro":
+        y_start = (H - total_h) // 2
+    else:  # Base
+        y_start = H - total_h - margin_px
+
+    # Background box
+    if bg_box and lines:
+        pad = int(font_size * 0.4)
+        box_img = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        box_draw = ImageDraw.Draw(box_img)
+        try:
+            bc = ImageColor.getrgb(bg_box_color) + (int(bg_box_alpha * 2.55),)
+        except Exception:
+            bc = (0, 0, 0, int(bg_box_alpha * 2.55))
+        box_draw.rectangle(
+            [margin_px - pad, y_start - pad,
+             W - margin_px + pad, y_start + total_h + pad],
+            fill=bc
+        )
+        img = Image.alpha_composite(img, box_img)
+        draw = ImageDraw.Draw(img)
+
+    # Draw lines
+    try:
+        fc = ImageColor.getrgb(font_color)
+    except Exception:
+        fc = (255, 255, 255)
+    try:
+        sc = ImageColor.getrgb(shadow_color)
+    except Exception:
+        sc = (0, 0, 0)
+    try:
+        oc = ImageColor.getrgb(outline_color)
+    except Exception:
+        oc = (0, 0, 0)
+
+    y = y_start
+    for line in lines:
+        bbox = draw.textbbox((0, 0), line, font=font)
+        lw = bbox[2] - bbox[0]
+        if h_align == "Centro":
+            x = (W - lw) // 2
+        elif h_align == "Direita":
+            x = W - lw - margin_px
+        else:
+            x = margin_px
+
+        # Shadow
+        if shadow:
+            sd = max(2, font_size // 14)
+            draw.text((x + sd, y + sd), line, font=font, fill=sc + (180,))
+
+        # Outline
+        if outline:
+            for dx in range(-outline_w, outline_w + 1):
+                for dy in range(-outline_w, outline_w + 1):
+                    if dx != 0 or dy != 0:
+                        draw.text((x + dx, y + dy), line, font=font, fill=oc)
+
+        # Main text
+        draw.text((x, y), line, font=font, fill=fc)
+        y += line_h
+
+    return img.convert("RGB")
+
+
+def _render_text_layer(text: str, W: int, H: int, tcfg: dict) -> Image.Image:
+    """
+    Renderiza apenas a camada de texto (RGBA transparente) para composição animada.
+    Retorna imagem RGBA do mesmo tamanho W×H com texto sobre fundo transparente.
+    """
+    layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    if not text or not text.strip():
+        return layer
+
+    font_size    = tcfg.get("font_size", 42)
+    font_color   = tcfg.get("font_color", "#FFFFFF")
+    font_style   = tcfg.get("font_style", "Sans")
+    h_align      = tcfg.get("h_align", "Centro")
+    v_align      = tcfg.get("v_align", "Base")
+    shadow       = tcfg.get("shadow", True)
+    shadow_color = tcfg.get("shadow_color", "#000000")
+    outline      = tcfg.get("outline", False)
+    outline_color= tcfg.get("outline_color", "#000000")
+    outline_w    = tcfg.get("outline_w", 2)
+    bg_box       = tcfg.get("bg_box", False)
+    bg_box_color = tcfg.get("bg_box_color", "#000000")
+    bg_box_alpha = tcfg.get("bg_box_alpha", 60)
+    margin_pct   = 0.05
+
+    draw = ImageDraw.Draw(layer)
+    margin_px = int(W * margin_pct)
+    max_w = W - 2 * margin_px
+
+    font = None
+    font_paths = []
+    if font_style == "Serif":
+        font_paths = ["/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
+                      "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf"]
+    elif font_style == "Mono":
+        font_paths = ["/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf"]
+    else:
+        font_paths = ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                      "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+                      "/usr/share/fonts/truetype/freefont/FreeSans.ttf"]
+    for fp in font_paths:
+        if os.path.exists(fp):
+            try:
+                font = ImageFont.truetype(fp, font_size)
+                break
+            except Exception:
+                pass
+    if font is None:
+        font = ImageFont.load_default()
+
+    lines = []
+    for paragraph in text.split("\n"):
+        words_p = paragraph.split()
+        line = ""
+        for word in words_p:
+            test = (line + " " + word).strip()
+            bbox = draw.textbbox((0, 0), test, font=font)
+            if bbox[2] - bbox[0] <= max_w:
+                line = test
+            else:
+                if line:
+                    lines.append(line)
+                line = word
+        if line:
+            lines.append(line)
+
+    line_h    = font_size + int(font_size * 0.3)
+    total_h   = len(lines) * line_h
+
+    if v_align == "Topo":
+        y_start = margin_px
+    elif v_align == "Centro":
+        y_start = (H - total_h) // 2
+    else:
+        y_start = H - total_h - margin_px
+
+    if bg_box and lines:
+        pad = int(font_size * 0.4)
+        try:
+            bc = ImageColor.getrgb(bg_box_color) + (int(bg_box_alpha * 2.55),)
+        except Exception:
+            bc = (0, 0, 0, int(bg_box_alpha * 2.55))
+        draw.rectangle(
+            [margin_px - pad, y_start - pad,
+             W - margin_px + pad, y_start + total_h + pad],
+            fill=bc
+        )
+
+    try:
+        fc = ImageColor.getrgb(font_color) + (255,)
+    except Exception:
+        fc = (255, 255, 255, 255)
+    try:
+        sc = ImageColor.getrgb(shadow_color) + (180,)
+    except Exception:
+        sc = (0, 0, 0, 180)
+    try:
+        oc = ImageColor.getrgb(outline_color) + (255,)
+    except Exception:
+        oc = (0, 0, 0, 255)
+
+    y = y_start
+    for line in lines:
+        bbox = draw.textbbox((0, 0), line, font=font)
+        lw = bbox[2] - bbox[0]
+        if h_align == "Centro":
+            x = (W - lw) // 2
+        elif h_align == "Direita":
+            x = W - lw - margin_px
+        else:
+            x = margin_px
+        if shadow:
+            sd = max(2, font_size // 14)
+            draw.text((x + sd, y + sd), line, font=font, fill=sc)
+        if outline:
+            for dx in range(-outline_w, outline_w + 1):
+                for dy in range(-outline_w, outline_w + 1):
+                    if dx != 0 or dy != 0:
+                        draw.text((x + dx, y + dy), line, font=font, fill=oc)
+        draw.text((x, y), line, font=font, fill=fc)
+        y += line_h
+
+    return layer
+
+
+def _apply_text_animation(
+    base_bgr: np.ndarray,
+    text_layer: Image.Image,
+    anim_type: str,
+    frame_i: int,
+    n_frames: int,
+    fps: int,
+    text: str,
+    tcfg: dict,
+) -> np.ndarray:
+    """
+    Compõe o frame final aplicando a animação de texto escolhida.
+    Retorna np.ndarray BGR para salvar com cv2.
+    """
+    W = base_bgr.shape[1]
+    H = base_bgr.shape[0]
+    t = frame_i / max(n_frames - 1, 1)   # 0.0 → 1.0
+
+    # Converte base para PIL RGBA para composição
+    base_pil = Image.fromarray(cv2.cvtColor(base_bgr, cv2.COLOR_BGR2RGB)).convert("RGBA")
+
+    if anim_type == "Estático" or not text or not text.strip():
+        # Sem animação — compõe direto
+        result = Image.alpha_composite(base_pil, text_layer)
+        return cv2.cvtColor(np.array(result.convert("RGB")), cv2.COLOR_RGB2BGR)
+
+    elif anim_type == "Rolagem (baixo→cima)":
+        # Texto sobe continuamente de baixo para cima ao longo do slide
+        scroll_range = H + text_layer.height if hasattr(text_layer, 'height') else H * 2
+        offset_y = int(H - t * (H + H))
+        shifted = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        shifted.paste(text_layer, (0, offset_y))
+        result = Image.alpha_composite(base_pil, shifted)
+        return cv2.cvtColor(np.array(result.convert("RGB")), cv2.COLOR_RGB2BGR)
+
+    elif anim_type == "Fade In":
+        # Texto aparece gradualmente
+        alpha_val = int(min(t * 2, 1.0) * 255)
+        faded = text_layer.copy()
+        r, g, b, a = faded.split()
+        a = a.point(lambda x: int(x * alpha_val / 255))
+        faded = Image.merge("RGBA", (r, g, b, a))
+        result = Image.alpha_composite(base_pil, faded)
+        return cv2.cvtColor(np.array(result.convert("RGB")), cv2.COLOR_RGB2BGR)
+
+    elif anim_type == "Fade Out":
+        alpha_val = int(max(1.0 - t * 2, 0.0) * 255)
+        faded = text_layer.copy()
+        r, g, b, a = faded.split()
+        a = a.point(lambda x: int(x * alpha_val / 255))
+        faded = Image.merge("RGBA", (r, g, b, a))
+        result = Image.alpha_composite(base_pil, faded)
+        return cv2.cvtColor(np.array(result.convert("RGB")), cv2.COLOR_RGB2BGR)
+
+    elif anim_type == "Typewriter (letra a letra)":
+        # Revela o texto caractere a caractere
+        total_chars = len(text)
+        chars_to_show = max(1, int(t * total_chars))
+        partial_text = text[:chars_to_show]
+        partial_layer = _render_text_layer(partial_text, W, H, tcfg)
+        result = Image.alpha_composite(base_pil, partial_layer)
+        return cv2.cvtColor(np.array(result.convert("RGB")), cv2.COLOR_RGB2BGR)
+
+    elif anim_type == "Palavra por Palavra":
+        words = text.split()
+        total_words = len(words)
+        words_to_show = max(1, int(t * total_words))
+        partial_text = " ".join(words[:words_to_show])
+        partial_layer = _render_text_layer(partial_text, W, H, tcfg)
+        result = Image.alpha_composite(base_pil, partial_layer)
+        return cv2.cvtColor(np.array(result.convert("RGB")), cv2.COLOR_RGB2BGR)
+
+    elif anim_type == "Slide Lateral (direita→centro)":
+        # Texto entra pela direita e para no centro
+        ease = 1 - (1 - min(t * 1.5, 1.0)) ** 3   # ease-out cubic
+        offset_x = int((1 - ease) * W)
+        shifted = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        shifted.paste(text_layer, (offset_x, 0))
+        result = Image.alpha_composite(base_pil, shifted)
+        return cv2.cvtColor(np.array(result.convert("RGB")), cv2.COLOR_RGB2BGR)
+
+    elif anim_type == "Slide Lateral (esquerda→centro)":
+        ease = 1 - (1 - min(t * 1.5, 1.0)) ** 3
+        offset_x = int(-(1 - ease) * W)
+        shifted = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        shifted.paste(text_layer, (offset_x, 0))
+        result = Image.alpha_composite(base_pil, shifted)
+        return cv2.cvtColor(np.array(result.convert("RGB")), cv2.COLOR_RGB2BGR)
+
+    elif anim_type == "Zoom (cresce)":
+        # Texto começa pequeno e cresce até tamanho normal
+        scale = 0.3 + 0.7 * min(t * 1.5, 1.0)
+        new_w = max(1, int(W * scale))
+        new_h = max(1, int(H * scale))
+        resized = text_layer.resize((new_w, new_h), Image.LANCZOS)
+        zoomed = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        paste_x = (W - new_w) // 2
+        paste_y = (H - new_h) // 2
+        zoomed.paste(resized, (paste_x, paste_y))
+        result = Image.alpha_composite(base_pil, zoomed)
+        return cv2.cvtColor(np.array(result.convert("RGB")), cv2.COLOR_RGB2BGR)
+
+    elif anim_type == "Pulso / Glow":
+        # Texto pulsa em opacidade — efeito de brilho rítmico
+        pulse = 0.6 + 0.4 * math.sin(t * math.pi * 4)
+        alpha_val = int(pulse * 255)
+        faded = text_layer.copy()
+        r, g, b, a = faded.split()
+        a = a.point(lambda x: int(x * alpha_val / 255))
+        faded = Image.merge("RGBA", (r, g, b, a))
+        result = Image.alpha_composite(base_pil, faded)
+        return cv2.cvtColor(np.array(result.convert("RGB")), cv2.COLOR_RGB2BGR)
+
+    else:
+        # Fallback estático
+        result = Image.alpha_composite(base_pil, text_layer)
+        return cv2.cvtColor(np.array(result.convert("RGB")), cv2.COLOR_RGB2BGR)
+
+
+def _build_video_from_slides(
+    slides: list,          # [(Image, duration_s, text, text_cfg), ...]
+    audio_bytes: bytes,
+    audio_ext: str,
+    fps: int,
+    transition_frames: int,
+    output_path: str,
+    progress_cb=None,
+    anim_type: str = "Estático",
+) -> str:
+    """
+    Monta vídeo MP4 frame-a-frame usando Pillow + OpenCV + FFmpeg.
+    Suporta animações de texto por frame.
+    Retorna caminho do arquivo gerado.
+    """
+    import subprocess, tempfile
+
+    W, H = 1280, 720
+    tmp_dir = tempfile.mkdtemp(prefix="mont_vid_")
+
+    frame_idx    = 0
+    total_slides = len(slides)
+
+    for si, (pil_img, dur_s, text, tcfg) in enumerate(slides):
+        if progress_cb:
+            progress_cb((si + 0.5) / total_slides * 0.8)
+
+        # Base do slide — sem texto (texto é composto por animação)
+        slide_img = pil_img.convert("RGB").resize((W, H), Image.LANCZOS)
+        base_bgr  = cv2.cvtColor(np.array(slide_img), cv2.COLOR_RGB2BGR)
+
+        n_frames = max(1, int(dur_s * fps))
+
+        # Pré-renderiza a camada de texto (RGBA) para animação
+        text_layer = _render_text_layer(text or "", W, H, tcfg)
+
+        # Transition dissolve in (from previous slide's last frame)
+        trans_start = frame_idx
+        if si > 0 and transition_frames > 0:
+            for tf in range(transition_frames):
+                alpha = tf / transition_frames
+                # Dissolve: black → current frame
+                blended_base = cv2.addWeighted(
+                    np.zeros_like(base_bgr), 1 - alpha, base_bgr, alpha, 0
+                )
+                t_frac = tf / max(n_frames - 1, 1)
+                final_frame = _apply_text_animation(
+                    blended_base, text_layer, anim_type, tf, n_frames, fps, text or "", tcfg
+                )
+                fname = os.path.join(tmp_dir, f"frame_{frame_idx:06d}.jpg")
+                cv2.imwrite(fname, final_frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+                frame_idx += 1
+
+        # Main frames com animação de texto
+        remaining = n_frames - (transition_frames if si > 0 else 0)
+        for fi in range(remaining):
+            global_fi = (transition_frames if si > 0 else 0) + fi
+            final_frame = _apply_text_animation(
+                base_bgr, text_layer, anim_type,
+                global_fi, n_frames, fps, text or "", tcfg
+            )
+            fname = os.path.join(tmp_dir, f"frame_{frame_idx:06d}.jpg")
+            cv2.imwrite(fname, final_frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+            frame_idx += 1
+
+    if progress_cb:
+        progress_cb(0.85)
+
+    # Salva áudio temporariamente
+    audio_tmp = os.path.join(tmp_dir, f"audio.{audio_ext}")
+    with open(audio_tmp, "wb") as f:
+        f.write(audio_bytes)
+
+    # Monta vídeo com ffmpeg
+    pattern       = os.path.join(tmp_dir, "frame_%06d.jpg")
+    total_vid_dur = sum(s[1] for s in slides)
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-framerate", str(fps),
+        "-i", pattern,
+        "-i", audio_tmp,
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-crf", "23",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-b:a", "192k",
+        "-shortest",
+        "-t", str(total_vid_dur),
+        output_path
+    ]
+    subprocess.run(cmd, capture_output=True, timeout=300)
+
+    if progress_cb:
+        progress_cb(1.0)
+
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+    return output_path
+
+
 def tab_montagem():
-    st.markdown('<div class="stitle">🎼 MONTAGEM & PROMPTS MUSICAIS</div>', unsafe_allow_html=True)
-    sub_a, sub_b = st.tabs(["🎵 Prompts para IAs de Áudio", "🎬 Organizador de Montagem"])
+    st.markdown('<div class="stitle">🎼 MONTAGEM SINCRONIZADA + PROMPTS MUSICAIS</div>', unsafe_allow_html=True)
+    sub_a, sub_b = st.tabs(["🎵 Prompts para IAs de Áudio", "🎬 Montagem Sincronizada com Legenda"])
 
     with sub_a:
         st.markdown("**Gere prompts para Suno AI, Udio, ElevenLabs, MusicGen...**")
@@ -2091,60 +2625,382 @@ def tab_montagem():
                 f"prompts_{mp['tema']}.json",
                 "application/json", key="dl_mp_json")
 
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ABA: MONTAGEM SINCRONIZADA
+    # ═══════════════════════════════════════════════════════════════════════════
     with sub_b:
-        st.markdown("**Organize imagens + áudio → plano de montagem automático**")
-        imgs_up  = st.file_uploader("📁 Imagens geradas com IA:",
-                                    type=["png","jpg","jpeg","webp"],
-                                    accept_multiple_files=True, key="mont_imgs",
-                                    help="Selecione várias imagens para criar uma sequência.")
-        audio_up = st.file_uploader("🔊 Áudio da trilha:",
-                                    type=["mp3","wav","m4a"], key="mont_audio",
-                                    help="Opcional: áudio de fundo para a montagem.")
+        st.markdown("""
+        <div class="card cl">
+        <b>🎬 Montagem Sincronizada com Legenda Inteligente</b><br>
+        Envie imagens + áudio → a plataforma distribui os slides proporcionalmente
+        à duração da música e sincroniza a legenda pelo tempo de leitura (WPM).
+        </div>
+        """, unsafe_allow_html=True)
 
-        if imgs_up:
-            n = len(imgs_up)
-            dur_total = n * 6.0
-            slides    = max(3, min(n, int(dur_total/6)))
-            secs_per  = dur_total / slides
+        # ── UPLOAD ──────────────────────────────────────────────────────────
+        col_up1, col_up2 = st.columns(2)
+        with col_up1:
+            imgs_up = st.file_uploader(
+                "📁 Imagens (ordem = ordem dos slides):",
+                type=["png","jpg","jpeg","webp"],
+                accept_multiple_files=True, key="mont_imgs",
+                help="Selecione as imagens na ordem desejada de exibição."
+            )
+        with col_up2:
+            audio_up = st.file_uploader(
+                "🔊 Áudio da trilha (MP3/WAV/M4A):",
+                type=["mp3","wav","m4a"], key="mont_audio",
+                help="A duração deste áudio define o tempo total do vídeo."
+            )
 
-            c1,c2,c3 = st.columns(3)
-            c1.metric("Imagens",      n)
-            c2.metric("Slides ideais", slides)
-            c3.metric("Seg/slide",    f"{secs_per:.1f}s")
+        if not imgs_up:
+            st.info("👆 Envie pelo menos uma imagem para começar.")
+            return
 
-            st.markdown("**Preview da sequência (primeiras 6):**")
-            thumb_cols = st.columns(min(6, n))
-            for i, (col, f) in enumerate(zip(thumb_cols, imgs_up[:6])):
-                img = Image.open(f)
-                img.thumbnail((160,90))
-                col.image(img, caption=f"#{i+1} {secs_per:.1f}s", use_container_width=True)
+        # ── DETECÇÃO DE DURAÇÃO DO ÁUDIO ───────────────────────────────────
+        audio_bytes = None
+        audio_ext   = "mp3"
+        dur_total   = 0.0
 
-            if st.button("📄 Gerar Roteiro de Montagem", type="primary",
-                         key="gen_rot", use_container_width=True,
-                         help="Cria um arquivo TXT com a sequência de slides e instruções para editores."):
-                rot  = f"ROTEIRO DE MONTAGEM — {st.session_state.project_name}\n"
-                rot += f"Gerado: {datetime.now().strftime('%d/%m/%Y %H:%M')}\n"
-                rot += "="*60 + "\n\n"
-                rot += f"Total imagens: {n}\nDuração estimada: {dur_total:.0f}s\n"
-                rot += f"Slides: {slides}\nSeg/slide: {secs_per:.1f}s\n\n"
-                rot += "SEQUÊNCIA:\n"
-                t = 0.0
-                for i in range(slides):
-                    fn = imgs_up[i % n].name
-                    rot += f"  Slide {i+1:02d}: {t:.1f}s → {t+secs_per:.1f}s | {fn}\n"
-                    t += secs_per
-                rot += "\nINSTRUÇÕES:\n"
-                rot += "  1. Abra CapCut / Clipchamp / Premiere\n"
-                rot += "  2. Importe imagens na ordem acima\n"
-                rot += "  3. Ajuste cada slide para a duração indicada\n"
-                rot += "  4. Adicione o áudio como fundo\n"
-                rot += "  5. Transições: dissolve suave (0.3s)\n"
-                rot += "  6. Exporte 1080p MP4 / H.264\n"
-                st.download_button("⬇️ Baixar Roteiro TXT",
-                    rot.encode("utf-8"),
-                    f"roteiro_{st.session_state.project_name}.txt",
-                    "text/plain", use_container_width=True, key="dl_rot")
-                st.success("✅ Roteiro gerado!")
+        if audio_up:
+            audio_bytes = audio_up.read()
+            audio_ext   = audio_up.name.rsplit(".", 1)[-1].lower()
+            dur_total   = _get_audio_duration_seconds(audio_bytes, audio_ext)
+            st.success(f"🎵 Áudio detectado: **{dur_total:.1f}s** ({audio_up.name})")
+        else:
+            dur_total = st.number_input(
+                "⏱️ Duração total do vídeo (s) — sem áudio:",
+                min_value=5.0, max_value=600.0, value=60.0, step=5.0, key="mont_dur_manual"
+            )
+
+        n_imgs     = len(imgs_up)
+        secs_each  = dur_total / n_imgs
+
+        # ── MÉTRICAS RÁPIDAS ────────────────────────────────────────────────
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1.metric("🖼️ Imagens",      n_imgs)
+        mc2.metric("⏱️ Duração total", f"{dur_total:.1f}s")
+        mc3.metric("📐 Seg/slide",     f"{secs_each:.1f}s")
+        mc4.metric("🎞️ FPS saída",    "24")
+
+        # ── PREVIEW DOS SLIDES ──────────────────────────────────────────────
+        st.markdown("**📽️ Preview da sequência:**")
+        thumb_cols = st.columns(min(6, n_imgs))
+        for i, (col, f) in enumerate(zip(thumb_cols, imgs_up[:6])):
+            img = Image.open(f)
+            img.thumbnail((200, 113))
+            col.image(img, caption=f"Slide {i+1}\n{secs_each:.1f}s", use_container_width=True)
+        if n_imgs > 6:
+            st.caption(f"... e mais {n_imgs - 6} imagem(ns).")
+
+        st.markdown("---")
+
+        # ═══════════════════════════════════════════════════════════════════
+        # SEÇÃO: LEGENDA SINCRONIZADA
+        # ═══════════════════════════════════════════════════════════════════
+        st.markdown("### ✍️ Legenda Sincronizada")
+        st.markdown("""
+        <div class="card co" style="font-size:.88rem;">
+        O texto abaixo será distribuído <b>proporcionalmente ao tempo de leitura</b>
+        em relação à duração da música.
+        X palavras para Y segundos → cada bloco aparece pelo tempo exato de leitura.
+        </div>
+        """, unsafe_allow_html=True)
+
+        legenda_texto = st.text_area(
+            "📝 Texto da legenda completa:",
+            placeholder="Cole aqui o texto da leitura numerológica, poema, descrição ou qualquer conteúdo...",
+            height=150, key="mont_legenda",
+            help="O sistema divide o texto em blocos proporcionais ao tempo da música."
+        )
+
+        col_wpm, col_vel = st.columns(2)
+        with col_wpm:
+            wpm = st.slider(
+                "📖 Velocidade de leitura (WPM):",
+                min_value=80, max_value=300, value=150, step=10, key="mont_wpm",
+                help="Palavras por minuto. 150 = leitura normal. 100 = lenta. 200 = rápida."
+            )
+        with col_vel:
+            vel_label = "🐢 Lenta" if wpm < 110 else ("⚡ Rápida" if wpm > 190 else "🚶 Normal")
+            st.markdown(f"<br><div class='card cg' style='text-align:center;padding:.6rem;'>"
+                        f"<b>{vel_label}</b><br>{wpm} WPM</div>", unsafe_allow_html=True)
+
+        # Cálculo de blocos de legenda
+        legenda_blocks = []
+        if legenda_texto.strip():
+            legenda_blocks = _split_text_by_time(legenda_texto.strip(), dur_total, wpm)
+            read_time = _calc_wpm_duration(legenda_texto.strip(), wpm)
+            n_words   = len(legenda_texto.split())
+
+            st.markdown(f"""
+            <div class="card cl" style="font-size:.85rem;margin:.5rem 0;">
+            📊 <b>{n_words} palavras</b> → tempo de leitura estimado: <b>{read_time:.1f}s</b>
+            &nbsp;|&nbsp; Distribuídas em <b>{len(legenda_blocks)} blocos</b>
+            &nbsp;|&nbsp; Música: <b>{dur_total:.1f}s</b>
+            {'&nbsp;⚠️ <b>Texto mais longo que a música — será comprimido.</b>' if read_time > dur_total else '&nbsp;✅ Sincronização viável.'}
+            </div>
+            """, unsafe_allow_html=True)
+
+            with st.expander("👁️ Preview dos blocos de legenda (primeiros 5)", expanded=False):
+                for i, (blk, t0, t1) in enumerate(legenda_blocks[:5]):
+                    st.markdown(f"`{t0:.1f}s → {t1:.1f}s` — {blk}")
+                if len(legenda_blocks) > 5:
+                    st.caption(f"... e mais {len(legenda_blocks)-5} blocos.")
+
+        st.markdown("---")
+
+        # ═══════════════════════════════════════════════════════════════════
+        # SEÇÃO: ARTE DO TEXTO (TIPOGRAFIA)
+        # ═══════════════════════════════════════════════════════════════════
+        st.markdown("### 🎨 Arte do Texto — Configuração Tipográfica")
+
+        with st.expander("🖋️ Fonte, Tamanho & Cor", expanded=True):
+            tf_c1, tf_c2, tf_c3 = st.columns(3)
+            with tf_c1:
+                font_size = st.slider("Tamanho da fonte:", 18, 120, 48, key="tf_size",
+                                      help="Em pixels. Ajuste ao tamanho do vídeo (1280×720).")
+                font_style = st.selectbox("Família tipográfica:", ["Sans", "Serif", "Mono"], key="tf_style")
+            with tf_c2:
+                font_color = st.color_picker("Cor do texto:", "#FFFFFF", key="tf_color")
+                font_bold   = st.checkbox("Negrito", value=True, key="tf_bold")
+                font_italic = st.checkbox("Itálico", value=False, key="tf_italic")
+            with tf_c3:
+                h_align = st.selectbox("Alinhamento horizontal:", ["Centro","Esquerda","Direita"], key="tf_halign")
+                v_align = st.selectbox("Posição vertical:", ["Base","Centro","Topo"], key="tf_valign")
+
+        with st.expander("🌑 Sombreamento & Contorno", expanded=True):
+            sh_c1, sh_c2 = st.columns(2)
+            with sh_c1:
+                shadow      = st.checkbox("✅ Sombra no texto", value=True, key="tf_shadow")
+                shadow_color= st.color_picker("Cor da sombra:", "#000000", key="tf_shadow_color")
+            with sh_c2:
+                outline      = st.checkbox("Contorno (outline)", value=False, key="tf_outline")
+                outline_color= st.color_picker("Cor do contorno:", "#000000", key="tf_outline_color")
+                outline_w    = st.slider("Espessura do contorno:", 1, 8, 2, key="tf_outline_w")
+
+        with st.expander("🟦 Caixa de fundo (legibility box)", expanded=False):
+            bg_c1, bg_c2 = st.columns(2)
+            with bg_c1:
+                bg_box       = st.checkbox("Ativar caixa de fundo", value=False, key="tf_bgbox")
+                bg_box_color = st.color_picker("Cor da caixa:", "#000000", key="tf_bgbox_color")
+            with bg_c2:
+                bg_box_alpha = st.slider("Opacidade da caixa (%):", 10, 100, 60, key="tf_bgbox_alpha",
+                                         help="100 = totalmente opaco, 0 = transparente.")
+
+        # Preview tipográfico
+        if legenda_texto.strip():
+            with st.expander("👁️ Preview tipográfico ao vivo", expanded=False):
+                preview_img = Image.new("RGB", (640, 120), color=(30, 40, 60))
+                sample_text = legenda_blocks[0][0] if legenda_blocks else legenda_texto[:80]
+                try:
+                    preview_img = _render_text_on_image(
+                        preview_img, sample_text,
+                        font_size=max(18, font_size // 2),
+                        font_color=font_color, font_style=font_style,
+                        h_align=h_align, v_align="Centro",
+                        shadow=shadow, shadow_color=shadow_color,
+                        bold=font_bold, italic=font_italic,
+                        outline=outline, outline_color=outline_color, outline_w=outline_w,
+                        bg_box=bg_box, bg_box_color=bg_box_color, bg_box_alpha=bg_box_alpha,
+                    )
+                    st.image(preview_img, caption="Preview tipográfico (escala 50%)", use_container_width=True)
+                except Exception as e:
+                    st.warning(f"Preview indisponível: {e}")
+
+        st.markdown("---")
+
+        # ═══════════════════════════════════════════════════════════════════
+        # SEÇÃO: CONFIGURAÇÕES DE VÍDEO
+        # ═══════════════════════════════════════════════════════════════════
+        st.markdown("### ⚙️ Configurações de Vídeo")
+
+        # ── ANIMAÇÃO DO TEXTO ───────────────────────────────────────────────
+        st.markdown("#### 🎭 Animação da Legenda")
+        ANIM_OPTIONS = {
+            "Estático"                      : "Texto fixo, sem movimento.",
+            "Rolagem (baixo→cima)"          : "Texto sobe continuamente como créditos de filme.",
+            "Fade In"                       : "Texto aparece gradualmente do transparente ao sólido.",
+            "Fade Out"                      : "Texto some gradualmente ao longo do slide.",
+            "Typewriter (letra a letra)"    : "Texto digita-se letra por letra da esquerda para direita.",
+            "Palavra por Palavra"           : "Cada palavra aparece no ritmo do WPM configurado.",
+            "Slide Lateral (direita→centro)": "Texto entra pela direita com ease-out suave.",
+            "Slide Lateral (esquerda→centro)": "Texto entra pela esquerda com ease-out suave.",
+            "Zoom (cresce)"                 : "Texto começa pequeno e cresce até tamanho normal.",
+            "Pulso / Glow"                  : "Texto pulsa em brilho — ideal para frequências e energia.",
+        }
+        anim_c1, anim_c2 = st.columns([2, 1])
+        with anim_c1:
+            anim_type = st.selectbox(
+                "Tipo de animação:",
+                list(ANIM_OPTIONS.keys()),
+                key="mont_anim",
+                help="Define como a legenda se move durante cada slide."
+            )
+        with anim_c2:
+            st.markdown(f"<br><div class='card cl' style='font-size:.82rem;padding:.6rem;'>"
+                        f"ℹ️ {ANIM_OPTIONS[anim_type]}</div>", unsafe_allow_html=True)
+
+        st.markdown("---")
+        vc1, vc2 = st.columns(2)
+        with vc1:
+            transition_frames = st.slider(
+                "Frames de transição entre slides:", 0, 24, 8, key="mont_trans",
+                help="0 = corte seco. 8-12 = dissolve suave. 24 = dissolve lento."
+            )
+        with vc2:
+            modo_legenda = st.selectbox(
+                "Modo de legenda:",
+                ["Blocos proporcionais ao WPM", "Uma legenda por slide", "Sem legenda"],
+                key="mont_modo_leg",
+                help="Blocos WPM = legenda muda no tempo de leitura. Por slide = texto fixo por imagem."
+            )
+
+        # Se modo "Uma legenda por slide", permite inserir texto por slide
+        slide_texts = []
+        if modo_legenda == "Uma legenda por slide" and imgs_up:
+            st.markdown("**📝 Texto por slide (opcional):**")
+            for i in range(n_imgs):
+                slide_texts.append(
+                    st.text_input(f"Slide {i+1}:", key=f"slide_txt_{i}",
+                                  placeholder=f"Legenda do slide {i+1}...")
+                )
+
+        # ── ROTEIRO DE MONTAGEM (TXT) ───────────────────────────────────────
+        st.markdown("---")
+        st.markdown("### 📄 Roteiro de Montagem")
+
+        if st.button("📄 Gerar Roteiro TXT", key="gen_rot", use_container_width=True,
+                     help="Cria arquivo TXT com sequência, tempos e blocos de legenda."):
+            rot  = f"ROTEIRO DE MONTAGEM SINCRONIZADA — {st.session_state.project_name}\n"
+            rot += f"Gerado: {datetime.now().strftime('%d/%m/%Y %H:%M')}\n"
+            rot += "=" * 65 + "\n\n"
+            rot += f"Total imagens : {n_imgs}\n"
+            rot += f"Duração total : {dur_total:.1f}s\n"
+            rot += f"Seg/slide     : {secs_each:.1f}s\n"
+            rot += f"WPM leitura   : {wpm}\n"
+            rot += f"Transição     : {transition_frames} frames dissolve\n\n"
+            rot += "SEQUÊNCIA DE SLIDES:\n" + "-" * 40 + "\n"
+            t = 0.0
+            for i, f in enumerate(imgs_up):
+                rot += f"  Slide {i+1:02d}: {t:.1f}s → {t+secs_each:.1f}s | {f.name}\n"
+                t += secs_each
+            if legenda_blocks and modo_legenda == "Blocos proporcionais ao WPM":
+                rot += "\nBLOCOS DE LEGENDA (WPM sincronizado):\n" + "-" * 40 + "\n"
+                for blk, t0, t1 in legenda_blocks:
+                    rot += f"  {t0:.1f}s → {t1:.1f}s : {blk}\n"
+            rot += "\nCONFIGURAÇÃO TIPOGRÁFICA:\n" + "-" * 40 + "\n"
+            rot += f"  Fonte: {font_style} | Tamanho: {font_size}px | Cor: {font_color}\n"
+            rot += f"  Alinhamento: {h_align} | Posição: {v_align}\n"
+            rot += f"  Sombra: {'Sim' if shadow else 'Não'} | Contorno: {'Sim' if outline else 'Não'}\n"
+            rot += f"  Caixa fundo: {'Sim' if bg_box else 'Não'}\n"
+            rot += "\nINSTRUÇÕES EXPORTAÇÃO:\n" + "-" * 40 + "\n"
+            rot += "  Resolução: 1280×720 (HD)\n"
+            rot += "  Codec vídeo: H.264 | Codec áudio: AAC 192kbps\n"
+            rot += "  Formato: MP4\n"
+
+            st.download_button(
+                "⬇️ Baixar Roteiro TXT", rot.encode("utf-8"),
+                f"roteiro_{st.session_state.project_name}.txt",
+                "text/plain", use_container_width=True, key="dl_rot"
+            )
+            st.success("✅ Roteiro gerado!")
+
+        # ── GERAÇÃO DO VÍDEO ────────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("### 🎬 Gerar Vídeo MP4")
+
+        if not audio_up:
+            st.warning("⚠️ Para gerar o vídeo, envie um áudio acima. Sem áudio, apenas o roteiro TXT está disponível.")
+        else:
+            if st.button("🚀 GERAR VÍDEO SINCRONIZADO", type="primary",
+                         key="gen_vid", use_container_width=True,
+                         help="Processa imagens + legenda + áudio e exporta MP4."):
+
+                text_cfg = {
+                    "font_size"    : font_size,
+                    "font_color"   : font_color,
+                    "font_style"   : font_style,
+                    "h_align"      : h_align,
+                    "v_align"      : v_align,
+                    "shadow"       : shadow,
+                    "shadow_color" : shadow_color,
+                    "bold"         : font_bold,
+                    "italic"       : font_italic,
+                    "outline"      : outline,
+                    "outline_color": outline_color,
+                    "outline_w"    : outline_w,
+                    "bg_box"       : bg_box,
+                    "bg_box_color" : bg_box_color,
+                    "bg_box_alpha" : bg_box_alpha,
+                }
+
+                # Monta lista de slides: (PIL, duração, texto, cfg)
+                slides_data = []
+
+                if modo_legenda == "Blocos proporcionais ao WPM" and legenda_blocks:
+                    # Mapeia blocos de legenda → frames de imagem
+                    # Cada slide recebe o bloco(s) cujo início cai dentro do intervalo do slide
+                    for i, f in enumerate(imgs_up):
+                        t_slide_start = i * secs_each
+                        t_slide_end   = t_slide_start + secs_each
+                        # Coleta blocos que caem neste slide
+                        blks = [b[0] for b in legenda_blocks
+                                if b[1] < t_slide_end and b[2] > t_slide_start]
+                        txt = "\n".join(blks) if blks else ""
+                        pil = Image.open(f)
+                        slides_data.append((pil, secs_each, txt, text_cfg))
+
+                elif modo_legenda == "Uma legenda por slide":
+                    for i, f in enumerate(imgs_up):
+                        pil = Image.open(f)
+                        txt = slide_texts[i] if i < len(slide_texts) else ""
+                        slides_data.append((pil, secs_each, txt, text_cfg))
+
+                else:  # Sem legenda
+                    for f in imgs_up:
+                        pil = Image.open(f)
+                        slides_data.append((pil, secs_each, "", text_cfg))
+
+                out_path = os.path.join(st.session_state.working_dir,
+                                        f"montagem_{st.session_state.project_name}.mp4")
+
+                prog_bar  = st.progress(0.0, text="Processando slides...")
+                prog_text = st.empty()
+
+                def progress_cb(v):
+                    prog_bar.progress(min(v, 1.0), text=f"Renderizando... {int(v*100)}%")
+
+                try:
+                    with st.spinner("🎬 Gerando vídeo — pode levar alguns minutos..."):
+                        _build_video_from_slides(
+                            slides_data, audio_bytes, audio_ext,
+                            fps=24, transition_frames=transition_frames,
+                            output_path=out_path, progress_cb=progress_cb,
+                            anim_type=anim_type,
+                        )
+
+                    if os.path.exists(out_path) and os.path.getsize(out_path) > 1000:
+                        prog_bar.progress(1.0, text="✅ Concluído!")
+                        with open(out_path, "rb") as vf:
+                            vid_bytes = vf.read()
+                        st.session_state["_export_video"] = vid_bytes
+                        st.success("🎉 Vídeo gerado com sucesso!")
+                        st.video(vid_bytes)
+                        st.download_button(
+                            "⬇️ Baixar MP4",
+                            vid_bytes,
+                            f"montagem_{st.session_state.project_name}.mp4",
+                            "video/mp4",
+                            use_container_width=True, key="dl_vid_mont"
+                        )
+                    else:
+                        st.error("❌ Falha ao gerar vídeo. Verifique se o FFmpeg está instalado.")
+                        st.code("pip install imageio-ffmpeg", language="bash")
+
+                except Exception as e:
+                    st.error(f"❌ Erro durante geração: {e}")
+                    st.code(traceback.format_exc(), language="python")
 
 def tab_export():
     st.markdown('<div class="stitle">📦 EXPORTAÇÃO & STATUS</div>', unsafe_allow_html=True)
