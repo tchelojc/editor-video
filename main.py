@@ -602,85 +602,112 @@ def apply_filters(image: Image.Image, cfg: Dict) -> Image.Image:
 def apply_frame(image: Image.Image, cfg: Dict) -> Image.Image:
     """
     Aplica moldura decorativa à imagem.
-    Retorna SEMPRE uma imagem RGB.
+    Preserva o modo de cor original (RGB ou RGBA).
     """
     ft = cfg.get("tipo", "Nenhuma")
     if ft == "Nenhuma":
-        return image.convert("RGB")
+        return image.copy()
 
-    # Trabalha em RGBA para permitir transparências
-    img = image.convert("RGBA")
-    w, h = img.size
+    # Garante que a imagem base esteja em RGBA para composição
+    base_rgba = image.convert("RGBA")
+    w, h = base_rgba.size
+
+    # Overlay transparente
     overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
 
-    col = cfg.get("cor", "#FFFFFF")
+    # Cor da moldura
+    col_hex = cfg.get("cor", "#FFFFFF")
+    if not col_hex.startswith("#"):
+        col_hex = "#" + col_hex
+    try:
+        rgb_col = ImageColor.getrgb(col_hex)
+    except ValueError:
+        rgb_col = (255, 255, 255)
+
     thickness = max(1, cfg.get("espessura", 10))
 
+    # Desenha a moldura conforme o tipo
     if ft == "Neon":
         for i in range(thickness, 0, -1):
             alpha = int(255 * (i / thickness) ** 0.5)
-            neon_color = (*ImageColor.getrgb(col), alpha)
+            neon_color = (*rgb_col, alpha)
             draw.rectangle([(i, i), (w - i, h - i)], outline=neon_color, width=1)
 
     elif ft == "Janela":
-        draw.rectangle([(0, 0), (w - 1, h - 1)], outline=col, width=thickness)
-        draw.line([(w // 2, 0), (w // 2, h)], fill=col, width=max(1, thickness // 2))
-        draw.line([(0, h // 2), (w, h // 2)], fill=col, width=max(1, thickness // 2))
+        draw.rectangle([(0, 0), (w - 1, h - 1)], outline=rgb_col, width=thickness)
+        draw.line([(w // 2, 0), (w // 2, h)], fill=rgb_col, width=max(1, thickness // 2))
+        draw.line([(0, h // 2), (w, h // 2)], fill=rgb_col, width=max(1, thickness // 2))
 
     elif ft == "Câmera":
-        draw.rectangle([(thickness//2, thickness//2), (w - thickness//2, h - thickness//2)],
-                       outline=col, width=thickness)
-        draw.rectangle([(0, h - thickness * 3), (w, h)], fill=col)
+        draw.rectangle(
+            [(thickness//2, thickness//2), (w - thickness//2, h - thickness//2)],
+            outline=rgb_col, width=thickness
+        )
+        draw.rectangle([(0, h - thickness * 3), (w, h)], fill=rgb_col)
 
     elif ft == "Smartphone":
         r = min(w, h) // 8
-        draw.rounded_rectangle([(thickness//2, thickness//2), (w - thickness//2, h - thickness//2)],
-                               radius=r, outline=col, width=thickness)
+        draw.rounded_rectangle(
+            [(thickness//2, thickness//2), (w - thickness//2, h - thickness//2)],
+            radius=r, outline=rgb_col, width=thickness
+        )
         nw, nh = w // 5, thickness * 2
-        draw.rectangle([(w//2 - nw//2, 0), (w//2 + nw//2, nh)], fill=col)
+        draw.rectangle([(w//2 - nw//2, 0), (w//2 + nw//2, nh)], fill=rgb_col)
 
     elif ft == "Portal":
         cx, cy = w // 2, h // 2
         rad = min(w, h) // 2 - thickness
         for i in range(thickness, 0, -1):
             alpha = int(255 * (i / thickness) ** 0.5)
-            portal_color = (*ImageColor.getrgb(col), alpha)
-            draw.ellipse([(cx - rad - i, cy - rad - i),
-                          (cx + rad + i, cy + rad + i)],
-                         outline=portal_color, width=1)
+            portal_color = (*rgb_col, alpha)
+            draw.ellipse(
+                [(cx - rad - i, cy - rad - i), (cx + rad + i, cy + rad + i)],
+                outline=portal_color, width=1
+            )
 
     elif ft == "Lupa":
         cx, cy = w // 2, h // 2
         rad = min(w, h) // 2 - thickness
-        draw.ellipse([(cx - rad, cy - rad), (cx + rad, cy + rad)], outline=col, width=thickness)
+        draw.ellipse([(cx - rad, cy - rad), (cx + rad, cy + rad)], outline=rgb_col, width=thickness)
         handle_len = h // 3
-        draw.rectangle([(cx - thickness, cy + rad), (cx + thickness, cy + rad + handle_len)], fill=col)
+        draw.rectangle(
+            [(cx - thickness, cy + rad), (cx + thickness, cy + rad + handle_len)],
+            fill=rgb_col
+        )
 
     elif ft == "Cinemascope":
         bar_h = int(h * 0.108)
-        draw.rectangle([(0, 0), (w, bar_h)], fill=col)
-        draw.rectangle([(0, h - bar_h), (w, h)], fill=col)
+        draw.rectangle([(0, 0), (w, bar_h)], fill=rgb_col)
+        draw.rectangle([(0, h - bar_h), (w, h)], fill=rgb_col)
 
     elif ft == "Dupla":
-        draw.rectangle([(0, 0), (w - 1, h - 1)], outline=col, width=thickness)
+        draw.rectangle([(0, 0), (w - 1, h - 1)], outline=rgb_col, width=thickness)
         inner = thickness * 3
-        draw.rectangle([(inner, inner), (w - inner, h - inner)],
-                       outline=col, width=max(1, thickness // 2))
+        draw.rectangle(
+            [(inner, inner), (w - inner, h - inner)],
+            outline=rgb_col, width=max(1, thickness // 2)
+        )
 
     elif ft == "Glitch":
         for i in range(0, thickness * 2, 2):
             offset = random.randint(-4, 4)
             alpha = int(200 * (1 - i / (thickness * 2 + 1)))
-            glitch_color = (*ImageColor.getrgb(col), alpha)
-            draw.rectangle([(i + offset, i), (w - i + offset, h - i)],
-                           outline=glitch_color, width=1)
+            glitch_color = (*rgb_col, alpha)
+            draw.rectangle(
+                [(i + offset, i), (w - i + offset, h - i)],
+                outline=glitch_color, width=1
+            )
 
-    # Combina a moldura com a imagem original
-    result = Image.alpha_composite(img, overlay)
-    # Converte para RGB (remove transparência) para compatibilidade com vídeo
-    return result.convert("RGB")
+    # Combina a imagem base com o overlay
+    result = Image.alpha_composite(base_rgba, overlay)
 
+    # Retorna no mesmo modo da imagem original (RGB ou RGBA)
+    if image.mode == "RGB":
+        return result.convert("RGB")
+    else:
+        return result
+    
 def apply_text(image: Image.Image, cfg: Dict) -> Image.Image:
     texto = cfg.get("texto","")
     if not texto: return image
@@ -2120,6 +2147,599 @@ def tab_ia_audio():
                     with st.expander(f"📋 {ptype}", expanded=False):
                         st.code(pcontent, language="text")
 
+# ==============================================================================
+# MOTOR DE ÁUDIO AVANÇADO — Playlist + Transições + Efeitos Sonoros
+# ==============================================================================
+
+# ---- Efeitos sonoros sintéticos (gerados por numpy, sem arquivo externo) -----
+def _gerar_efeito_sonoro(nome: str, sr: int = 44100) -> np.ndarray:
+    """
+    Gera efeito sonoro como array float32 mono [-1, 1].
+    Não precisa de arquivos externos — tudo via numpy/math.
+    """
+    dur_map = {
+        "click_mouse":    0.05,
+        "double_click":   0.12,
+        "teclado":        0.08,
+        "tecla_enter":    0.15,
+        "alerta_suave":   0.6,
+        "alerta_urgente": 0.8,
+        "woosh":          0.5,
+        "swoosh_heavy":   0.7,
+        "pop":            0.1,
+        "ding":           0.6,
+        "notificacao":    0.4,
+        "erro":           0.5,
+        "sucesso":        0.7,
+        "camera_flash":   0.15,
+        "swoosh_up":      0.4,
+        "swoosh_down":    0.4,
+        "coin":           0.3,
+        "power_up":       0.8,
+    }
+    dur = dur_map.get(nome, 0.3)
+    n = int(sr * dur)
+    t = np.linspace(0, dur, n, endpoint=False)
+
+    if nome == "click_mouse":
+        env = np.exp(-t * 120)
+        sig = np.random.randn(n) * env * 0.6
+        sig += np.sin(2 * np.pi * 1800 * t) * env * 0.3
+
+    elif nome == "double_click":
+        half = n // 2
+        env1 = np.exp(-np.linspace(0, 0.06, half) * 120)
+        env2 = np.exp(-np.linspace(0, 0.06, n - half) * 120)
+        c1 = np.random.randn(half) * env1 * 0.6
+        c2 = np.random.randn(n - half) * env2 * 0.6
+        sig = np.concatenate([c1, np.zeros(int(sr * 0.04)), c2])[:n]
+
+    elif nome == "teclado":
+        env = np.exp(-t * 80)
+        sig = np.random.randn(n) * env * 0.4
+        sig += np.sin(2 * np.pi * 900 * t) * np.exp(-t * 60) * 0.25
+
+    elif nome == "tecla_enter":
+        env = np.exp(-t * 40)
+        sig = np.random.randn(n) * env * 0.5
+        sig += np.sin(2 * np.pi * 600 * t) * np.exp(-t * 30) * 0.35
+
+    elif nome == "alerta_suave":
+        freq = 880
+        env = np.where(t < 0.05, t / 0.05, np.exp(-(t - 0.05) * 8))
+        sig = np.sin(2 * np.pi * freq * t) * env * 0.6
+
+    elif nome == "alerta_urgente":
+        freqs = [440 + 220 * (int(t[i] * 5) % 2) for i in range(n)]
+        env = np.where(t < 0.02, t / 0.02, 1.0) * np.where(t > dur - 0.05, (dur - t) / 0.05, 1.0)
+        sig = np.sin(2 * np.pi * np.array(freqs) * t) * env * 0.7
+
+    elif nome == "woosh":
+        noise = np.random.randn(n)
+        env = np.sin(np.pi * t / dur) ** 1.5
+        cutoff_sweep = (0.02 + 0.95 * t / dur)
+        from scipy.ndimage import uniform_filter1d
+        try:
+            kernel = max(1, int(sr * 0.005))
+            filtered = uniform_filter1d(noise, size=kernel)
+        except Exception:
+            filtered = noise
+        sig = filtered * env * 0.8
+
+    elif nome == "swoosh_heavy":
+        noise = np.random.randn(n) * 0.7
+        env = np.sin(np.pi * t / dur) ** 2
+        freq_sweep = 200 + 800 * (1 - t / dur)
+        sweep = np.sin(2 * np.pi * np.cumsum(freq_sweep) / sr)
+        sig = (noise * 0.4 + sweep * 0.6) * env
+
+    elif nome == "pop":
+        env = np.exp(-t * 80)
+        sig = np.sin(2 * np.pi * 200 * t) * env * 0.8
+        sig += np.random.randn(n) * env * 0.2
+
+    elif nome == "ding":
+        f0, f1 = 1760, 2637
+        env = np.exp(-t * 6)
+        sig = (np.sin(2 * np.pi * f0 * t) + 0.5 * np.sin(2 * np.pi * f1 * t)) * env * 0.5
+
+    elif nome == "notificacao":
+        f_seq = [880, 1109]
+        half = n // 2
+        env = np.exp(-np.linspace(0, dur, n) * 8)
+        t0 = np.linspace(0, dur / 2, half)
+        t1 = np.linspace(0, dur / 2, n - half)
+        sig = np.concatenate([
+            np.sin(2 * np.pi * f_seq[0] * t0),
+            np.sin(2 * np.pi * f_seq[1] * t1)
+        ]) * env * 0.55
+
+    elif nome == "erro":
+        env = np.exp(-t * 4)
+        sig = (np.sin(2 * np.pi * 220 * t) + 0.5 * np.sin(2 * np.pi * 185 * t)) * env * 0.6
+
+    elif nome == "sucesso":
+        notes = [523, 659, 784]
+        seg = n // 3
+        parts = []
+        for freq in notes:
+            ts = np.linspace(0, dur / 3, seg)
+            env = np.where(ts < 0.01, ts / 0.01, np.exp(-(ts - 0.01) * 10))
+            parts.append(np.sin(2 * np.pi * freq * ts) * env * 0.5)
+        sig = np.concatenate(parts)[:n]
+
+    elif nome == "camera_flash":
+        env = np.exp(-t * 150)
+        sig = np.random.randn(n) * env * 0.5
+        sig += np.sin(2 * np.pi * 2500 * t) * env * 0.3
+
+    elif nome == "swoosh_up":
+        freq_sweep = 100 + 1400 * (t / dur)
+        env = np.sin(np.pi * t / dur)
+        sig = np.sin(2 * np.pi * np.cumsum(freq_sweep) / sr) * env * 0.6
+
+    elif nome == "swoosh_down":
+        freq_sweep = 1500 - 1400 * (t / dur)
+        env = np.sin(np.pi * t / dur)
+        sig = np.sin(2 * np.pi * np.cumsum(freq_sweep) / sr) * env * 0.6
+
+    elif nome == "coin":
+        f0, f1 = 1200, 1600
+        env = np.exp(-t * 12)
+        sig = (np.sin(2 * np.pi * f0 * t) + 0.6 * np.sin(2 * np.pi * f1 * t)) * env * 0.55
+
+    elif nome == "power_up":
+        freq_sweep = 200 + 1800 * (t / dur) ** 0.5
+        env = np.sin(np.pi * t / dur) ** 0.5
+        harmonics = (np.sin(2 * np.pi * np.cumsum(freq_sweep) / sr)
+                     + 0.4 * np.sin(2 * np.pi * np.cumsum(freq_sweep * 2) / sr))
+        sig = harmonics * env * 0.5
+    else:
+        sig = np.zeros(n)
+
+    sig = np.clip(sig, -1.0, 1.0)
+    return sig.astype(np.float32)
+
+
+def _efeito_para_wav_bytes(nome: str, volume: float = 1.0, sr: int = 44100) -> bytes:
+    """Converte efeito sonoro sintético para bytes WAV."""
+    import wave, struct
+    sig = _gerar_efeito_sonoro(nome, sr) * float(np.clip(volume, 0, 2))
+    sig = np.clip(sig, -1.0, 1.0)
+    pcm = (sig * 32767).astype(np.int16)
+    buf = io.BytesIO()
+    with wave.open(buf, 'wb') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sr)
+        wf.writeframes(pcm.tobytes())
+    return buf.getvalue()
+
+
+# ---- Concatenação de múltiplos áudios com transição via ffmpeg ---------------
+def _concat_audios_ffmpeg(
+    audio_entries: list,          # lista de dicts: {bytes, ext, repetitions, trim_start, trim_end}
+    transition: str = "crossfade",
+    transition_dur: float = 0.5,
+    gap_silence: float = 0.0,
+    normalize: bool = True,
+) -> tuple:
+    """
+    Concatena múltiplos áudios usando ffmpeg.
+    Retorna (bytes_final, ext_final, duracao_total_s).
+
+    transition: 'crossfade' | 'fade' | 'silence' | 'cut'
+    """
+    import tempfile, subprocess, json as _json, struct, wave
+
+    tmp_dir = tempfile.mkdtemp(prefix="audio_concat_")
+    input_files = []
+
+    # 1. Escreve cada entrada em arquivo temporário (aplicando repetições)
+    for i, entry in enumerate(audio_entries):
+        raw = entry["bytes"]
+        ext = entry.get("ext", "mp3")
+        reps = max(1, int(entry.get("repetitions", 1)))
+        # Para repetições: usamos ffmpeg concat protocol
+        in_path = os.path.join(tmp_dir, f"src_{i}.{ext}")
+        with open(in_path, "wb") as f:
+            f.write(raw)
+
+        if reps > 1:
+            # Cria lista de concat para repetição
+            rep_list = os.path.join(tmp_dir, f"rep_{i}.txt")
+            with open(rep_list, "w") as f:
+                for _ in range(reps):
+                    f.write(f"file '{in_path}'\n")
+            rep_out = os.path.join(tmp_dir, f"rep_{i}_out.wav")
+            subprocess.run(
+                ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                 "-i", rep_list, "-acodec", "pcm_s16le", rep_out],
+                capture_output=True, timeout=60
+            )
+            input_files.append(rep_out)
+        else:
+            # Converte para WAV normalizado
+            wav_path = os.path.join(tmp_dir, f"src_{i}.wav")
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", in_path, "-acodec", "pcm_s16le",
+                 "-ar", "44100", "-ac", "2", wav_path],
+                capture_output=True, timeout=60
+            )
+            input_files.append(wav_path)
+
+    if not input_files:
+        return b"", "wav", 0.0
+
+    # 2. Monta filtergraph de concatenação com transição
+    if len(input_files) == 1:
+        out_path = os.path.join(tmp_dir, "final.wav")
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", input_files[0], out_path],
+            capture_output=True, timeout=120
+        )
+    elif transition == "cut":
+        # Concatenação direta sem efeito
+        list_path = os.path.join(tmp_dir, "concat_list.txt")
+        with open(list_path, "w") as f:
+            for fp in input_files:
+                f.write(f"file '{fp}'\n")
+        out_path = os.path.join(tmp_dir, "final.wav")
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+             "-i", list_path, "-acodec", "pcm_s16le", out_path],
+            capture_output=True, timeout=120
+        )
+    elif transition == "silence":
+        # Insere silêncio entre as faixas
+        silence_dur = max(0.1, gap_silence)
+        silence_path = os.path.join(tmp_dir, "silence.wav")
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "lavfi",
+             "-i", f"anullsrc=r=44100:cl=stereo:d={silence_dur}",
+             "-acodec", "pcm_s16le", silence_path],
+            capture_output=True, timeout=30
+        )
+        list_path = os.path.join(tmp_dir, "concat_sil.txt")
+        with open(list_path, "w") as f:
+            for i, fp in enumerate(input_files):
+                f.write(f"file '{fp}'\n")
+                if i < len(input_files) - 1:
+                    f.write(f"file '{silence_path}'\n")
+        out_path = os.path.join(tmp_dir, "final.wav")
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+             "-i", list_path, "-acodec", "pcm_s16le", out_path],
+            capture_output=True, timeout=120
+        )
+    else:
+        # crossfade ou fade: usa acrossfade filter
+        xdur = max(0.1, transition_dur)
+        # Constrói cadeia de acrossfade entre pares
+        inputs = " ".join([f"-i {fp}" for fp in input_files])
+        # Construir filtergraph dinâmico
+        filter_parts = []
+        n = len(input_files)
+        prev = "0:a"
+        for idx in range(1, n):
+            lbl = f"cf{idx}"
+            filter_parts.append(
+                f"[{prev}][{idx}:a]acrossfade=d={xdur}:c1=tri:c2=tri[{lbl}]"
+            )
+            prev = lbl
+        fg = ";".join(filter_parts)
+        out_path = os.path.join(tmp_dir, "final.wav")
+        cmd = ["ffmpeg", "-y"]
+        for fp in input_files:
+            cmd += ["-i", fp]
+        cmd += ["-filter_complex", fg, "-map", f"[{prev}]",
+                "-acodec", "pcm_s16le", out_path]
+        result = subprocess.run(cmd, capture_output=True, timeout=180)
+        # fallback para cut se crossfade falhou
+        if not os.path.exists(out_path) or os.path.getsize(out_path) < 100:
+            list_path = os.path.join(tmp_dir, "concat_fb.txt")
+            with open(list_path, "w") as f:
+                for fp in input_files:
+                    f.write(f"file '{fp}'\n")
+            subprocess.run(
+                ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                 "-i", list_path, "-acodec", "pcm_s16le", out_path],
+                capture_output=True, timeout=120
+            )
+
+    # 3. Normaliza se solicitado
+    if normalize and os.path.exists(out_path):
+        norm_path = os.path.join(tmp_dir, "final_norm.wav")
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", out_path,
+             "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
+             norm_path],
+            capture_output=True, timeout=60
+        )
+        if os.path.exists(norm_path) and os.path.getsize(norm_path) > 100:
+            out_path = norm_path
+
+    if not os.path.exists(out_path):
+        return b"", "wav", 0.0
+
+    with open(out_path, "rb") as f:
+        final_bytes = f.read()
+
+    # Duração real
+    dur = _get_audio_duration_seconds(final_bytes, "wav")
+    return final_bytes, "wav", dur
+
+def _get_audio_duration_seconds_safe(audio_bytes: bytes, ext: str, timeout: float = 5.0) -> float:
+    """
+    Obtém a duração do áudio usando ffprobe com timeout.
+    Em caso de falha, estima com base no tamanho (128 kbps MP3).
+    """
+    import subprocess
+    import tempfile
+    import json as _json
+
+    # Fallback rápido por tamanho (caso ffprobe não funcione)
+    fallback_duration = len(audio_bytes) / 16000.0  # ~128 kbps
+
+    try:
+        with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as f:
+            f.write(audio_bytes)
+            tmp_path = f.name
+        # Comando ffprobe com timeout
+        cmd = [
+            "ffprobe", "-v", "quiet", "-print_format", "json",
+            "-show_streams", tmp_path
+        ]
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout
+        )
+        if result.returncode == 0:
+            data = _json.loads(result.stdout)
+            for stream in data.get("streams", []):
+                if "duration" in stream:
+                    return float(stream["duration"])
+        return fallback_duration
+    except (subprocess.TimeoutExpired, Exception):
+        return fallback_duration
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except:
+            pass
+        
+def _render_playlist_ui(key_prefix: str = "playlist") -> tuple:
+    """
+    Interface completa de playlist de áudios com transições e efeitos sonoros.
+    Retorna (audio_bytes, audio_ext, dur_total_s) ou (None, None, 0).
+    """
+    # ── Inicializa estado ──────────────────────────────────────────────────────
+    pl_key = f"{key_prefix}_items"
+    if pl_key not in st.session_state:
+        st.session_state[pl_key] = []
+
+    st.markdown("""
+    <div class="card cl" style="margin-bottom:.8rem;">
+    🎵 <b>Playlist de Áudios</b> — envie múltiplas faixas, defina ordem, repetições e
+    transições entre elas para montar a trilha sonora completa do seu vídeo.
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── 1. Upload de novas faixas ──────────────────────────────────────────────
+    new_audios = st.file_uploader(
+        "➕ Adicionar faixas (MP3/WAV/M4A) — múltipla seleção permitida:",
+        type=["mp3", "wav", "m4a"],
+        accept_multiple_files=True,
+        key=f"{key_prefix}_uploader",
+        help="Selecione uma ou mais faixas para adicionar à playlist.",
+    )
+    if new_audios:
+        # Processa apenas os arquivos que ainda não estão na playlist
+        items = st.session_state[pl_key]
+        novos_adicionados = False
+        for f in new_audios:
+            # Verifica se já existe pelo nome
+            if any(item["name"] == f.name for item in items):
+                continue
+            # Lê o conteúdo do arquivo
+            raw = f.read()
+            ext = f.name.rsplit(".", 1)[-1].lower()
+            # Tenta obter a duração com ffprobe (com timeout)
+            with st.spinner(f"Analisando {f.name}..."):
+                dur = _get_audio_duration_seconds_safe(raw, ext, timeout=10)
+            items.append({
+                "name": f.name,
+                "bytes": raw,
+                "ext": ext,
+                "dur_orig": round(dur, 2),
+                "repetitions": 1,
+                "volume": 1.0,
+            })
+            novos_adicionados = True
+        if novos_adicionados:
+            # Limpa o uploader para evitar processamento repetido
+            # (Streamlit não permite reset direto, mas o rerun é aceitável após processamento bem-sucedido)
+            st.rerun()
+
+    items = st.session_state[pl_key]
+
+    # ── 2. Lista da playlist ───────────────────────────────────────────────────
+    if not items:
+        st.info("👆 Nenhuma faixa adicionada ainda. Faça upload acima ou adicione um efeito sonoro.")
+    else:
+        st.markdown(f"**🎶 Faixas na playlist ({len(items)}):**")
+        to_remove = []
+        to_move_up = []
+        to_move_dn = []
+
+        for i, item in enumerate(items):
+            dur_total = item["dur_orig"] * item["repetitions"]
+            col_num, col_info, col_rep, col_vol, col_act = st.columns([.4, 3, 1.4, 1.4, 1.5])
+
+            with col_num:
+                st.markdown(f"<div style='padding-top:28px;color:var(--c1);font-weight:700;'>{i+1}</div>",
+                            unsafe_allow_html=True)
+
+            with col_info:
+                icon = "🎵" if item.get("is_fx") else "🎶"
+                st.markdown(f"""
+                <div class="card" style="padding:.5rem .8rem;margin:0;">
+                  <b>{icon} {item['name']}</b><br>
+                  <span style="font-size:.78rem;color:var(--dim);">
+                  Orig: {item['dur_orig']:.1f}s · Total: {dur_total:.1f}s
+                  </span>
+                </div>""", unsafe_allow_html=True)
+
+            with col_rep:
+                new_rep = st.number_input(
+                    "Repetições", min_value=1, max_value=10,
+                    value=item["repetitions"], step=1,
+                    key=f"{key_prefix}_rep_{i}",
+                    label_visibility="collapsed",
+                    help="Quantas vezes repetir esta faixa.",
+                )
+                item["repetitions"] = int(new_rep)
+
+            with col_vol:
+                new_vol = st.slider(
+                    "Vol", 0.0, 2.0, float(item.get("volume", 1.0)), 0.05,
+                    key=f"{key_prefix}_vol_{i}",
+                    label_visibility="collapsed",
+                    help="Volume desta faixa (1.0 = original).",
+                )
+                item["volume"] = float(new_vol)
+
+            with col_act:
+                c_up, c_dn, c_rm = st.columns(3)
+                if c_up.button("▲", key=f"{key_prefix}_up_{i}", help="Mover para cima"):
+                    to_move_up.append(i)
+                if c_dn.button("▼", key=f"{key_prefix}_dn_{i}", help="Mover para baixo"):
+                    to_move_dn.append(i)
+                if c_rm.button("🗑", key=f"{key_prefix}_rm_{i}", help="Remover"):
+                    to_remove.append(i)
+
+        # Aplica ações de lista
+        for i in sorted(to_remove, reverse=True):
+            items.pop(i)
+        for i in to_move_up:
+            if i > 0:
+                items[i], items[i-1] = items[i-1], items[i]
+        for i in to_move_dn:
+            if i < len(items) - 1:
+                items[i], items[i+1] = items[i+1], items[i]
+        if to_remove or to_move_up or to_move_dn:
+            st.rerun()
+
+    # ── 4. Configurações de Transição ─────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 🔀 Transição entre Faixas")
+
+    TRANS_OPTIONS = {
+        "🔀 Crossfade (suave)": "crossfade",
+        "📉 Fade Out → Fade In": "fade",
+        "⏸️ Silêncio entre faixas": "silence",
+        "✂️ Corte seco (sem efeito)": "cut",
+    }
+
+    col_tr1, col_tr2, col_tr3 = st.columns(3)
+    with col_tr1:
+        trans_label = st.selectbox(
+            "Tipo de transição:", list(TRANS_OPTIONS.keys()),
+            key=f"{key_prefix}_trans_type",
+            help="Define o efeito sonoro na mudança de uma faixa para a próxima.",
+        )
+        trans_mode = TRANS_OPTIONS[trans_label]
+
+    with col_tr2:
+        trans_dur = st.slider(
+            "Duração da transição (s):", 0.1, 3.0, 0.5, 0.1,
+            key=f"{key_prefix}_trans_dur",
+            help="Duração do efeito de crossfade ou fade. Ignorado no corte seco.",
+        ) if trans_mode in ("crossfade", "fade") else 0.5
+
+    with col_tr3:
+        silence_gap = st.slider(
+            "Silêncio (s):", 0.0, 5.0, 1.0, 0.1,
+            key=f"{key_prefix}_silence_gap",
+            help="Duração do silêncio entre faixas (somente modo Silêncio).",
+        ) if trans_mode == "silence" else 0.0
+
+    normalize_audio = st.checkbox(
+        "🎚️ Normalizar volume total (loudnorm)", value=True,
+        key=f"{key_prefix}_normalize",
+        help="Equaliza o volume geral da trilha final (recomendado).",
+    )
+
+    # ── 5. Sumário e geração ──────────────────────────────────────────────────
+    if items:
+        total_est = sum(it["dur_orig"] * it["repetitions"] for it in items)
+        if trans_mode == "silence":
+            total_est += silence_gap * (len(items) - 1)
+        elif trans_mode in ("crossfade", "fade"):
+            total_est -= trans_dur * (len(items) - 1)
+        total_est = max(0, total_est)
+
+        st.markdown(f"""
+        <div class="card cg" style="margin-top:.6rem;">
+        📊 <b>Playlist:</b> {len(items)} faixa(s) · Duração estimada: <b>{total_est:.1f}s</b>
+        ({total_est/60:.1f} min) · Transição: {trans_label}
+        </div>
+        """, unsafe_allow_html=True)
+
+        col_gen, col_clear = st.columns([3, 1])
+        with col_gen:
+            if st.button("🎛️ MONTAR TRILHA COMPLETA", type="primary",
+                         key=f"{key_prefix}_build",
+                         use_container_width=True,
+                         help="Concatena todas as faixas com as transições configuradas."):
+                with st.spinner("🎼 Montando trilha — aguarde..."):
+                    try:
+                        final_bytes, final_ext, final_dur = _concat_audios_ffmpeg(
+                            audio_entries=items,
+                            transition=trans_mode,
+                            transition_dur=trans_dur,
+                            gap_silence=silence_gap,
+                            normalize=normalize_audio,
+                        )
+                        if final_bytes and final_dur > 0:
+                            st.session_state[f"{key_prefix}_final_bytes"] = final_bytes
+                            st.session_state[f"{key_prefix}_final_ext"] = final_ext
+                            st.session_state[f"{key_prefix}_final_dur"] = final_dur
+                            st.success(f"✅ Trilha montada: **{final_dur:.1f}s** ({final_dur/60:.1f} min)")
+                        else:
+                            st.error("❌ Falha ao montar a trilha. Verifique se o FFmpeg está instalado.")
+                    except Exception as e:
+                        st.error(f"❌ Erro: {e}")
+                        st.code(traceback.format_exc())
+
+        with col_clear:
+            if st.button("🗑️ Limpar playlist", key=f"{key_prefix}_clear",
+                         use_container_width=True):
+                st.session_state[pl_key] = []
+                for k in [f"{key_prefix}_final_bytes", f"{key_prefix}_final_ext", f"{key_prefix}_final_dur"]:
+                    st.session_state.pop(k, None)
+                st.rerun()
+
+    # ── 6. Player e download da trilha montada ────────────────────────────────
+    fb = st.session_state.get(f"{key_prefix}_final_bytes")
+    fe = st.session_state.get(f"{key_prefix}_final_ext", "wav")
+    fd = st.session_state.get(f"{key_prefix}_final_dur", 0.0)
+
+    if fb:
+        st.markdown("### ▶️ Trilha Montada")
+        st.audio(fb, format=f"audio/{fe}")
+        st.download_button(
+            "⬇️ Baixar Trilha Final (WAV)",
+            data=fb,
+            file_name=f"trilha_final_{key_prefix}.wav",
+            mime="audio/wav",
+            use_container_width=True,
+            key=f"{key_prefix}_dl_final",
+        )
+        return fb, fe, fd
+
+    return None, None, 0.0
+
+
 def _get_audio_duration_seconds(audio_bytes: bytes, ext: str) -> float:
     """Retorna duração do áudio em segundos usando ffprobe ou fallback."""
     try:
@@ -2460,19 +3080,19 @@ def _apply_text_animation(
     W = base_bgr.shape[1]
     H = base_bgr.shape[0]
     
-    # Se não houver texto ou se estivermos fora do intervalo de legenda (interval_progress None)
-    # e não houver texto, retorna apenas o frame base (sem legenda)
+    # CORREÇÃO AQUI: Se não houver texto ou estivermos fora do intervalo da legenda,
+    # retornamos uma cópia do frame base. Como ele já está em BGR, o cv2.imwrite
+    # vai salvar as cores exatamente como devem ser, sem inverter azul com vermelho.
     if not text or not text.strip():
-        return cv2.cvtColor(base_bgr, cv2.COLOR_BGR2RGB)  # sem texto
+        return base_bgr.copy()  
 
-    # Se estiver fora do intervalo (interval_progress é None) e o texto não deve aparecer,
-    # retorna o frame base.
     if interval_progress is None:
-        return cv2.cvtColor(base_bgr, cv2.COLOR_BGR2RGB)
+        return base_bgr.copy()  
 
     # Agora estamos dentro do intervalo: usa interval_progress (0..1) para animação
     t = interval_progress
 
+    # Converte de BGR (OpenCV) para RGB (Pillow) para manipular o texto corretamente
     base_pil = Image.fromarray(cv2.cvtColor(base_bgr, cv2.COLOR_BGR2RGB)).convert("RGBA")
 
     if anim_type == "Estático" or not text or not text.strip():
@@ -2563,7 +3183,83 @@ def _apply_text_animation(
         result = Image.alpha_composite(base_pil, text_layer)
         return cv2.cvtColor(np.array(result.convert("RGB")), cv2.COLOR_RGB2BGR)
         
-def _build_video_from_slides(
+def _apply_image_adjustment(
+    img: Image.Image,
+    target_w: int,
+    target_h: int,
+    mode: str = "cover",
+    zoom: float = 1.0,
+    offset_x: float = 0.0,
+    offset_y: float = 0.0,
+    background = None  # pode ser uma cor (str) ou uma Image
+) -> Image.Image:
+    """
+    Redimensiona a imagem conforme o modo, aplica zoom adicional e deslocamento.
+    Se mode='contain' e background for fornecido, usa o fundo especificado.
+    """
+    img = img.convert("RGB")
+    orig_w, orig_h = img.size
+
+    if mode == "cover":
+        scale = max(target_w / orig_w, target_h / orig_h) * zoom
+        new_w = int(orig_w * scale)
+        new_h = int(orig_h * scale)
+        resized = img.resize((new_w, new_h), Image.LANCZOS)
+        crop_left = (new_w - target_w) // 2
+        crop_top = (new_h - target_h) // 2
+        max_off_x = new_w - target_w
+        max_off_y = new_h - target_h
+        off_x_px = int(offset_x * max_off_x)
+        off_y_px = int(offset_y * max_off_y)
+        crop_left = max(0, min(crop_left + off_x_px, max_off_x))
+        crop_top = max(0, min(crop_top + off_y_px, max_off_y))
+        return resized.crop((crop_left, crop_top, crop_left + target_w, crop_top + target_h))
+    else:  # contain
+        scale = min(target_w / orig_w, target_h / orig_h) * zoom
+        new_w = int(orig_w * scale)
+        new_h = int(orig_h * scale)
+        resized = img.resize((new_w, new_h), Image.LANCZOS)
+
+        # Prepara o fundo
+        if background is None:
+            # padrão preto
+            background = Image.new("RGB", (target_w, target_h), color=(0, 0, 0))
+        elif isinstance(background, str):
+            # cor sólida
+            try:
+                rgb = ImageColor.getrgb(background)
+            except:
+                rgb = (0, 0, 0)
+            background = Image.new("RGB", (target_w, target_h), color=rgb)
+        elif isinstance(background, Image.Image):
+            # imagem de fundo: redimensiona para cobrir o quadro
+            bg_img = background.convert("RGB")
+            bg_w, bg_h = bg_img.size
+            bg_scale = max(target_w / bg_w, target_h / bg_h)
+            new_bg_w = int(bg_w * bg_scale)
+            new_bg_h = int(bg_h * bg_scale)
+            bg_resized = bg_img.resize((new_bg_w, new_bg_h), Image.LANCZOS)
+            left = (new_bg_w - target_w) // 2
+            top = (new_bg_h - target_h) // 2
+            background = bg_resized.crop((left, top, left + target_w, top + target_h))
+        else:
+            background = Image.new("RGB", (target_w, target_h), color=(0, 0, 0))
+
+        # Posiciona a imagem redimensionada sobre o fundo
+        paste_x = (target_w - new_w) // 2
+        paste_y = (target_h - new_h) // 2
+        max_off_x = target_w - new_w
+        max_off_y = target_h - new_h
+        off_x_px = int(offset_x * max_off_x)
+        off_y_px = int(offset_y * max_off_y)
+        paste_x = max(0, min(paste_x + off_x_px, max_off_x))
+        paste_y = max(0, min(paste_y + off_y_px, max_off_y))
+
+        result = background.copy()
+        result.paste(resized, (paste_x, paste_y))
+        return result
+            
+def _build_video_from_slides_enhanced(
     slides: list,
     audio_bytes: bytes,
     audio_ext: str,
@@ -2573,74 +3269,119 @@ def _build_video_from_slides(
     progress_cb=None,
     animation_segments: List[Dict] = None,
     default_anim_type: str = "Estático",
-    legenda_interval_start: float = 0.0,   # NOVO
-    legenda_interval_end: float = 0.0,     # NOVO
+    legenda_interval_start: float = 0.0,
+    legenda_interval_end: float = 0.0,
+    target_width: int = 1280,
+    target_height: int = 720,
+    crf: int = 18,
+    preset: str = "slow",
+    audio_loop: bool = False,
+    total_duration: float = None,
+    frame_config: Dict = None,
+    fit_mode: str = "cover",
+    background_config: Dict = None   # <-- NOVO PARÂMETRO
 ) -> str:
-    import subprocess, tempfile
+    import subprocess
+    import tempfile
 
     if animation_segments is None:
         animation_segments = []
 
-    W, H = 1280, 720
-    tmp_dir = tempfile.mkdtemp(prefix="mont_vid_")
-
+    tmp_dir = tempfile.mkdtemp(prefix="mont_vid_enh_")
     frame_idx = 0
     total_slides = len(slides)
     global_time = 0.0
 
-    for si, (pil_img, dur_s, text, tcfg) in enumerate(slides):
+    for si, slide_data in enumerate(slides):
         if progress_cb:
             progress_cb((si + 0.5) / total_slides * 0.8)
 
-        slide_img = pil_img.convert("RGB").resize((W, H), Image.LANCZOS)
+        # Extrai dados do slide (pode ter 4 ou 5 elementos)
+        if len(slide_data) == 4:
+            pil_img, dur_s, text, tcfg = slide_data
+            adj = {}
+        else:
+            pil_img, dur_s, text, tcfg, adj = slide_data
+
+        # Ajustes individuais (zoom, offset, modo)
+        mode = adj.get("mode", fit_mode)
+        zoom = adj.get("zoom", 1.0)
+        off_x = adj.get("offset_x", 0.0)
+        off_y = adj.get("offset_y", 0.0)
+
+        # Aplica ajustes e redimensionamento
+        slide_img = _apply_image_adjustment(
+            pil_img, target_width, target_height,
+            mode=mode, zoom=zoom, offset_x=off_x, offset_y=off_y
+        )
+
+        bg = None
+        if background_config:
+            if background_config["type"] == "Cor sólida":
+                bg = background_config["color"]
+            elif background_config["type"] == "Imagem" and background_config.get("image"):
+                bg = background_config["image"]
+
+        slide_img = _apply_image_adjustment(
+            pil_img, target_width, target_height,
+            mode=mode, zoom=zoom, offset_x=off_x, offset_y=off_y,
+            background=bg   # <-- passa o fundo
+        )
+        # Aplica moldura global, se configurada
+        if frame_config and frame_config.get("tipo") != "Nenhuma":
+            slide_img = apply_frame(slide_img, frame_config)
+        slide_img = slide_img.convert("RGB")
+
         base_bgr = cv2.cvtColor(np.array(slide_img), cv2.COLOR_RGB2BGR)
         n_frames = max(1, int(dur_s * fps))
-        text_layer = _render_text_layer(text or "", W, H, tcfg)
+        text_layer = _render_text_layer(text or "", target_width, target_height, tcfg)
 
         # Transição dissolve
         if si > 0 and transition_frames > 0:
             for tf in range(transition_frames):
                 alpha = tf / transition_frames
-                blended_base = cv2.addWeighted(np.zeros_like(base_bgr), 1 - alpha, base_bgr, alpha, 0)
+                blended_base = cv2.addWeighted(
+                    np.zeros_like(base_bgr), 1 - alpha, base_bgr, alpha, 0
+                )
                 t_global = global_time + (tf / fps)
                 anim_type = _get_animation_type_at_time(animation_segments, t_global)
                 if anim_type == "Estático" and not animation_segments:
                     anim_type = default_anim_type
 
-                # Calcula progresso específico para o intervalo de legenda
-                if legenda_interval_end > legenda_interval_start and legenda_interval_start <= t_global <= legenda_interval_end:
-                    # Progresso linear dentro do intervalo
+                if (legenda_interval_end > legenda_interval_start and
+                    legenda_interval_start <= t_global <= legenda_interval_end):
                     interval_progress = (t_global - legenda_interval_start) / (legenda_interval_end - legenda_interval_start)
                 else:
-                    interval_progress = None  # usa o progresso padrão do slide
+                    interval_progress = None
 
                 final_frame = _apply_text_animation(
                     blended_base, text_layer, anim_type, tf, n_frames, fps, text or "", tcfg,
-                    interval_progress=interval_progress  # NOVO parâmetro
+                    interval_progress=interval_progress,
                 )
                 fname = os.path.join(tmp_dir, f"frame_{frame_idx:06d}.jpg")
-                cv2.imwrite(fname, final_frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+                cv2.imwrite(fname, final_frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
                 frame_idx += 1
             global_time += transition_frames / fps
 
-        # Frames principais
+        # Frames principais do slide
         for fi in range(n_frames):
             t_global = global_time + (fi / fps)
             anim_type = _get_animation_type_at_time(animation_segments, t_global)
             if anim_type == "Estático" and not animation_segments:
                 anim_type = default_anim_type
 
-            if legenda_interval_end > legenda_interval_start and legenda_interval_start <= t_global <= legenda_interval_end:
+            if (legenda_interval_end > legenda_interval_start and
+                legenda_interval_start <= t_global <= legenda_interval_end):
                 interval_progress = (t_global - legenda_interval_start) / (legenda_interval_end - legenda_interval_start)
             else:
                 interval_progress = None
 
             final_frame = _apply_text_animation(
                 base_bgr, text_layer, anim_type, fi, n_frames, fps, text or "", tcfg,
-                interval_progress=interval_progress
+                interval_progress=interval_progress,
             )
             fname = os.path.join(tmp_dir, f"frame_{frame_idx:06d}.jpg")
-            cv2.imwrite(fname, final_frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+            cv2.imwrite(fname, final_frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
             frame_idx += 1
 
         global_time += dur_s
@@ -2648,30 +3389,24 @@ def _build_video_from_slides(
     if progress_cb:
         progress_cb(0.85)
 
-    # Áudio e FFmpeg...
     audio_tmp = os.path.join(tmp_dir, f"audio.{audio_ext}")
     with open(audio_tmp, "wb") as f:
         f.write(audio_bytes)
 
-    pattern = os.path.join(tmp_dir, "frame_%06d.jpg")
-    total_vid_dur = sum(s[1] for s in slides)
+    if total_duration is None:
+        total_duration = sum(s[1] if len(s) >= 2 else 0 for s in slides)
 
-    cmd = [
-        "ffmpeg", "-y",
-        "-framerate", str(fps),
-        "-i", pattern,
-        "-i", audio_tmp,
-        "-c:v", "libx264",
-        "-preset", "fast",
-        "-crf", "23",
-        "-pix_fmt", "yuv420p",
-        "-c:a", "aac",
-        "-b:a", "192k",
-        "-shortest",
-        "-t", str(total_vid_dur),
-        output_path
-    ]
-    subprocess.run(cmd, capture_output=True, timeout=300)
+    pattern = os.path.join(tmp_dir, "frame_%06d.jpg")
+    cmd = ["ffmpeg", "-y", "-framerate", str(fps), "-i", pattern]
+    if audio_loop:
+        cmd.extend(["-stream_loop", "-1"])
+    cmd.extend(["-i", audio_tmp, "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+                "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k"])
+    if not audio_loop:
+        cmd.append("-shortest")
+    cmd.extend(["-t", str(total_duration), output_path])
+
+    subprocess.run(cmd, capture_output=True, timeout=600)
 
     if progress_cb:
         progress_cb(1.0)
@@ -2733,7 +3468,114 @@ def format_legenda_com_timestamps(blocks_abs: List[Tuple[str, float, float]]) ->
         lines.append(f"[{start:.1f}] {txt}")
     return "\n".join(lines)
 
+def _mix_sound_effects(
+    base_audio_bytes: bytes,
+    base_audio_ext: str,
+    effects: List[Dict],
+    total_duration: float,
+) -> bytes:
+    import tempfile, subprocess, os, json
 
+    if not effects:
+        return base_audio_bytes
+
+    tmp_dir = tempfile.mkdtemp(prefix="fx_mix_")
+    base_path = os.path.join(tmp_dir, f"base.{base_audio_ext}")
+    with open(base_path, "wb") as f:
+        f.write(base_audio_bytes)
+
+    # Detecta número de canais do áudio base
+    cmd_info = ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", base_path]
+    info = subprocess.run(cmd_info, capture_output=True, text=True)
+    channels = 2  # padrão estéreo
+    try:
+        data = json.loads(info.stdout)
+        for stream in data.get("streams", []):
+            if stream["codec_type"] == "audio":
+                channels = stream.get("channels", 2)
+                break
+    except:
+        pass
+
+    effect_inputs = []
+    filter_parts = []
+    labels = []
+    for i, fx in enumerate(effects):
+        nome_fx = fx["name"]
+        volume = fx.get("volume", 1.0)
+        start = fx["start"]
+        duration = fx.get("duration", None)
+        fx_bytes = _efeito_para_wav_bytes(nome_fx, volume=volume)
+        fx_path = os.path.join(tmp_dir, f"fx_{i}.wav")
+        with open(fx_path, "wb") as f:
+            f.write(fx_bytes)
+        effect_inputs.extend(["-i", fx_path])
+
+        delay_ms = int(start * 1000)
+        # Atraso adequado para o número de canais
+        if channels == 1:
+            pad_cmd = f"[{i+1}:a]adelay={delay_ms}"
+        else:
+            pad_cmd = f"[{i+1}:a]adelay={delay_ms}|{delay_ms}"
+        if duration is not None:
+            pad_cmd += f",atrim=0:{duration}"
+        pad_cmd += f"[fx{i}]"
+        filter_parts.append(pad_cmd)
+        labels.append(f"[fx{i}]")
+
+    if len(labels) > 1:
+        mix_inputs = "".join(labels)
+        mix_filter = f"{mix_inputs}amix=inputs={len(labels)}:duration=longest[fx_mix]"
+        filter_parts.append(mix_filter)
+        final_mix = "[fx_mix]"
+    else:
+        final_mix = labels[0]
+
+    filter_parts.append(f"[0:a]{final_mix}amix=inputs=2:duration=first:dropout_transition=0[out]")
+    filter_graph = ";".join(filter_parts)
+
+    out_path = os.path.join(tmp_dir, "mixed.wav")
+    cmd = ["ffmpeg", "-y", "-i", base_path, *effect_inputs,
+           "-filter_complex", filter_graph, "-map", "[out]",
+           "-acodec", "pcm_s16le", "-t", str(total_duration), out_path]
+    subprocess.run(cmd, capture_output=True, timeout=120)
+
+    if os.path.exists(out_path):
+        with open(out_path, "rb") as f:
+            mixed_bytes = f.read()
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return mixed_bytes
+    else:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return base_audio_bytes
+    
+def _resize_image_for_frame(img: Image.Image, target_w: int, target_h: int, mode: str = "cover") -> Image.Image:
+    """
+    Redimensiona a imagem para caber nas dimensões alvo.
+    - mode='cover': preenche todo o quadro, cortando o excesso.
+    - mode='contain': mantém a imagem inteira dentro do quadro, adicionando barras pretas.
+    """
+    img = img.convert("RGB")
+    orig_w, orig_h = img.size
+    if mode == "cover":
+        scale = max(target_w / orig_w, target_h / orig_h)
+        new_w = int(orig_w * scale)
+        new_h = int(orig_h * scale)
+        resized = img.resize((new_w, new_h), Image.LANCZOS)
+        left = (new_w - target_w) // 2
+        top = (new_h - target_h) // 2
+        return resized.crop((left, top, left + target_w, top + target_h))
+    else:  # contain
+        scale = min(target_w / orig_w, target_h / orig_h)
+        new_w = int(orig_w * scale)
+        new_h = int(orig_h * scale)
+        resized = img.resize((new_w, new_h), Image.LANCZOS)
+        background = Image.new("RGB", (target_w, target_h), color=(0, 0, 0))
+        offset_x = (target_w - new_w) // 2
+        offset_y = (target_h - new_h) // 2
+        background.paste(resized, (offset_x, offset_y))
+        return background
+    
 def tab_montagem():
     st.markdown('<div class="stitle">🎼 MONTAGEM SINCRONIZADA + PROMPTS MUSICAIS</div>', unsafe_allow_html=True)
     sub_a, sub_b = st.tabs(["🎵 Prompts para IAs de Áudio", "🎬 Montagem Sincronizada com Legenda"])
@@ -2794,10 +3636,9 @@ def tab_montagem():
                                "application/json", key="dl_mp_json")
 
     # =========================================================================
-    # ABA MONTAGEM SINCRONIZADA (com todas as melhorias)
+    # ABA MONTAGEM SINCRONIZADA
     # =========================================================================
     with sub_b:
-        # ---- Definições iniciais ----
         ANIM_OPTIONS = {
             "Estático": "Texto fixo, sem movimento.",
             "Rolagem (baixo→cima)": "Texto sobe continuamente como créditos de filme.",
@@ -2810,76 +3651,322 @@ def tab_montagem():
             "Zoom (cresce)": "Texto começa pequeno e cresce até tamanho normal.",
             "Pulso / Glow": "Texto pulsa em brilho — ideal para frequências e energia.",
         }
+    
+        # Inicializa configuração de fundo se ainda não existir
+        if "background_config" not in st.session_state:
+            st.session_state.background_config = {
+                "type": "Cor sólida",
+                "color": "#000000",
+                "image": None
+            }
 
         st.markdown("""
         <div class="card cl">
         <b>🎬 Montagem Sincronizada com Legenda Inteligente</b><br>
-        Envie imagens + áudio → a plataforma distribui os slides proporcionalmente
-        à duração da música e sincroniza a legenda pelo tempo de leitura (WPM).
+        <b>1️⃣ Primeiro o áudio</b> (a duração define o vídeo).<br>
+        <b>2️⃣ Depois as imagens</b> (na ordem enviada).<br>
+        <b>3️⃣ Ajuste qualidade e resolução</b> no final.
         </div>
         """, unsafe_allow_html=True)
 
-        # ---- Upload de imagens e áudio ----
-        col_up1, col_up2 = st.columns(2)
-        with col_up1:
-            imgs_up = st.file_uploader(
-                "📁 Imagens (ordem = ordem dos slides):",
-                type=["png", "jpg", "jpeg", "webp"],
-                accept_multiple_files=True, key="mont_imgs",
-                help="Selecione as imagens na ordem desejada de exibição."
-            )
-        with col_up2:
-            audio_up = st.file_uploader(
-                "🔊 Áudio da trilha (MP3/WAV/M4A):",
-                type=["mp3", "wav", "m4a"], key="mont_audio",
-                help="A duração deste áudio define o tempo total do vídeo."
-            )
+        # ---------------------------------------------------------------------
+        # PASSO 1: ÁUDIO PRIMEIRO (determina duração total)
+        # ---------------------------------------------------------------------
+        st.markdown("### 🎵 1. TRILHA SONORA (obrigatório)")
+        with st.expander("🎵 Playlist + Transições + Efeitos Sonoros", expanded=True):
+            playlist_bytes, playlist_ext, playlist_dur = _render_playlist_ui(key_prefix="mont_playlist")
 
-        if not imgs_up:
-            st.info("👆 Envie pelo menos uma imagem para começar.")
-            return
-
-        # ---- Duração total e distribuição dos slides ----
-        audio_bytes = None
-        audio_ext = "mp3"
+        audio_bytes = playlist_bytes
+        audio_ext = playlist_ext if playlist_ext else "mp3"
         dur_total = 0.0
-        if audio_up:
-            audio_bytes = audio_up.read()
-            audio_ext = audio_up.name.rsplit(".", 1)[-1].lower()
-            dur_total = _get_audio_duration_seconds(audio_bytes, audio_ext)
-            st.success(f"🎵 Áudio detectado: **{dur_total:.1f}s** ({audio_up.name})")
+
+        if audio_bytes and playlist_dur > 0:
+            dur_total = playlist_dur
+            st.success(f"🎵 Trilha montada: **{dur_total:.1f}s** ({dur_total/60:.1f} min)")
         else:
             dur_total = st.number_input(
-                "⏱️ Duração total do vídeo (s) — sem áudio:",
+                "⏱️ Duração total do vídeo (s) — sem áudio ou se ainda não montou a trilha:",
                 min_value=5.0, max_value=600.0, value=60.0, step=5.0, key="mont_dur_manual"
             )
+            st.info("👆 Defina a duração manualmente ou monte uma trilha acima.")
+
+        # Controle de volume da música de fundo (NOVO)
+        st.markdown("---")
+        col_vol1, col_vol2 = st.columns(2)
+        with col_vol1:
+            musica_volume = st.slider(
+                "🔊 Volume da música de fundo:",
+                min_value=0.0, max_value=2.0, value=1.0, step=0.05,
+                key="musica_volume",
+                help="Ajuste o volume da trilha sonora. 1.0 = volume original."
+            )
+        with col_vol2:
+            st.caption("Use volumes menores para música ambiente, maiores para destaque.")
+
+        # Opção de ajuste do áudio à duração desejada (loop ou corte)
+        if audio_bytes and dur_total != playlist_dur:
+            st.markdown("**Ajuste do áudio à duração total:**")
+            audio_adjust = st.radio(
+                "Como ajustar?",
+                ["Usar duração exata do áudio (ignorar manual)",
+                 "Repetir áudio em loop até preencher",
+                 "Cortar áudio no final"],
+                key="audio_adjust",
+                help="Se a duração manual for diferente da duração do áudio, escolha como adaptar."
+            )
+            if audio_adjust == "Repetir áudio em loop até preencher":
+                st.session_state["audio_loop"] = True
+            elif audio_adjust == "Cortar áudio no final":
+                st.session_state["audio_loop"] = False
+            else:
+                dur_total = playlist_dur  # volta para duração original
+        else:
+            st.session_state["audio_loop"] = False
+
+        # ---------------------------------------------------------------------
+        # PASSO 2: IMAGENS (ordem mantida)
+        # ---------------------------------------------------------------------
+        st.markdown("---")
+        st.markdown("### 🖼️ 2. IMAGENS (ordem = sequência dos slides)")
+        imgs_up = st.file_uploader(
+            "Selecione as imagens na ordem desejada:",
+            type=["png", "jpg", "jpeg", "webp"],
+            accept_multiple_files=True,
+            key="mont_imgs",
+            help="A ordem de seleção será a ordem de exibição."
+        )
+
+        if not imgs_up:
+            st.info("👆 Envie pelo menos uma imagem para continuar.")
+            return
+
+        if len(imgs_up) > 1:
+            st.caption("Para reordenar, remova e adicione novamente na ordem desejada.")
 
         n_imgs = len(imgs_up)
         secs_each = dur_total / n_imgs
 
-        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1, mc2, mc3 = st.columns(3)
         mc1.metric("🖼️ Imagens", n_imgs)
         mc2.metric("⏱️ Duração total", f"{dur_total:.1f}s")
-        mc3.metric("📐 Seg/slide", f"{secs_each:.1f}s")
-        mc4.metric("🎞️ FPS saída", "24")
+        mc3.metric("📐 Segundos por slide", f"{secs_each:.2f}s")
 
-        st.markdown("**📽️ Preview da sequência:**")
+        st.markdown("**📽️ Sequência (primeiras 6):**")
         thumb_cols = st.columns(min(6, n_imgs))
         for i, (col, f) in enumerate(zip(thumb_cols, imgs_up[:6])):
             img = Image.open(f)
             img.thumbnail((200, 113))
-            col.image(img, caption=f"Slide {i+1}\n{secs_each:.1f}s", use_container_width=True)
+            col.image(img, caption=f"{i+1}: {secs_each:.1f}s", use_container_width=True)
         if n_imgs > 6:
             st.caption(f"... e mais {n_imgs - 6} imagem(ns).")
 
+        # ---------------------------------------------------------------------
+        # PASSO 2.5: AJUSTE INDIVIDUAL DE CADA IMAGEM
+        # ---------------------------------------------------------------------
         st.markdown("---")
+        st.markdown("### 🔍 2.5. AJUSTE INDIVIDUAL DAS IMAGENS")
+        st.markdown("Ajuste o enquadramento, zoom e posição de cada imagem separadamente.")
 
-        # ---- Legenda sincronizada e intervalo personalizado ----
-        st.markdown("### ✍️ Legenda Sincronizada")
+        # Inicializa estado se necessário
+        if "image_adjustments" not in st.session_state:
+            st.session_state.image_adjustments = [{"mode": "Cobrir (cortar)", "zoom": 1.0, "offset_x": 0.0, "offset_y": 0.0} for _ in range(n_imgs)]
+
+        # Garante que a lista tenha o tamanho correto (caso imagens sejam adicionadas/removidas)
+        current_adj = st.session_state.image_adjustments
+        if len(current_adj) != n_imgs:
+            if len(current_adj) < n_imgs:
+                current_adj.extend([{"mode": "Cobrir (cortar)", "zoom": 1.0, "offset_x": 0.0, "offset_y": 0.0} for _ in range(n_imgs - len(current_adj))])
+            else:
+                current_adj = current_adj[:n_imgs]
+            st.session_state.image_adjustments = current_adj
+
+        # Para cada imagem, exibe controles em um expander
+        for i, f in enumerate(imgs_up):
+            with st.expander(f"🎞️ Slide {i+1}: {f.name}"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    mode_label = st.selectbox(
+                        "Modo de ajuste:",
+                        ["Cobrir (cortar)", "Enquadrar (barras)"],
+                        index=0 if current_adj[i]["mode"] == "Cobrir (cortar)" else 1,
+                        key=f"adj_mode_{i}"
+                    )
+                    current_adj[i]["mode"] = mode_label
+                    zoom = st.slider(
+                        "Zoom adicional:",
+                        min_value=0.5, max_value=2.0, value=current_adj[i]["zoom"], step=0.05,
+                        key=f"adj_zoom_{i}",
+                        help="Aumente para dar zoom in, diminua para zoom out."
+                    )
+                    current_adj[i]["zoom"] = zoom
+                with col2:
+                    off_x = st.slider(
+                        "Deslocamento horizontal:",
+                        min_value=-0.5, max_value=0.5, value=current_adj[i]["offset_x"], step=0.05,
+                        key=f"adj_offx_{i}",
+                        help="Move a imagem para esquerda (-) ou direita (+)."
+                    )
+                    current_adj[i]["offset_x"] = off_x
+                    off_y = st.slider(
+                        "Deslocamento vertical:",
+                        min_value=-0.5, max_value=0.5, value=current_adj[i]["offset_y"], step=0.05,
+                        key=f"adj_offy_{i}",
+                        help="Move a imagem para cima (-) ou para baixo (+)."
+                    )
+                    current_adj[i]["offset_y"] = off_y
+
+                # Preview rápido do ajuste aplicado
+                preview_adj = _apply_image_adjustment(
+                    Image.open(f).convert("RGB"),
+                    320, 180,
+                    mode="cover" if mode_label == "Cobrir (cortar)" else "contain",
+                    zoom=zoom,
+                    offset_x=off_x,
+                    offset_y=off_y
+                )
+                st.image(preview_adj, caption=f"Preview slide {i+1}", use_container_width=True)
+
+        # ---------------------------------------------------------------------
+        # PASSO 2.6: FUNDO PERSONALIZADO (para modo Enquadrar)
+        # ---------------------------------------------------------------------
+        st.markdown("---")
+        st.markdown("### 🖌️ 2.6. FUNDO DO VÍDEO")
+        st.markdown("Personalize o fundo que aparece quando a imagem não preenche todo o quadro (modo 'Enquadrar').")
+
+        bg_type = st.radio(
+            "Tipo de fundo:",
+            ["Cor sólida", "Imagem"],
+            index=0 if st.session_state.background_config["type"] == "Cor sólida" else 1,
+            key="bg_type",
+            help="Escolha uma cor sólida ou faça upload de uma imagem de fundo."
+        )
+
+        if bg_type == "Cor sólida":
+            bg_color = st.color_picker(
+                "Cor de fundo:",
+                value=st.session_state.background_config.get("color", "#000000"),
+                key="bg_color"
+            )
+            bg_image = None
+        else:
+            bg_image_file = st.file_uploader(
+                "Imagem de fundo:",
+                type=["png", "jpg", "jpeg", "webp"],
+                key="bg_image_uploader",
+                help="Envie uma imagem para usar como fundo. Será redimensionada para cobrir todo o quadro."
+            )
+            if bg_image_file:
+                bg_image = Image.open(bg_image_file).convert("RGB")
+                st.session_state.background_config["image"] = bg_image
+            else:
+                bg_image = st.session_state.background_config.get("image")
+            bg_color = "#000000"  # fallback
+
+        # Salva a configuração
+        st.session_state.background_config = {
+            "type": bg_type,
+            "color": bg_color,
+            "image": bg_image
+        }
+
+        # Preview do fundo
+        if bg_type == "Imagem" and bg_image:
+            preview_bg = bg_image.copy()
+            preview_bg.thumbnail((320, 180))
+            st.image(preview_bg, caption="Pré-visualização do fundo", use_container_width=True)
+        else:
+            st.markdown(f"<div style='width:100%;height:60px;background:{bg_color};border-radius:6px;'></div>", unsafe_allow_html=True)
+            st.caption(f"Cor de fundo: {bg_color}")
+            
+        # ---------------------------------------------------------------------
+        # PASSO 3: EFEITOS SONOROS NA TIMELINE
+        # ---------------------------------------------------------------------
+        st.markdown("---")
+        st.markdown("### 🔊 3. EFEITOS SONOROS NA TIMELINE")
+        st.markdown("Adicione efeitos sonoros em momentos específicos do vídeo (ex: clique aos 5s, swoosh aos 17s).")
+
+        if "sound_fx_markers" not in st.session_state:
+            st.session_state.sound_fx_markers = []
+
+        fx_markers = st.session_state.sound_fx_markers
+
+        if fx_markers:
+            st.markdown("**Efeitos adicionados:**")
+            timeline_html = '<div class="timeline-bar" style="margin-bottom:10px;">'
+            for fx in sorted(fx_markers, key=lambda x: x["start"]):
+                left = (fx["start"] / dur_total) * 100
+                width = max(0.5, ((fx.get("duration", 0.5) / dur_total) * 100))
+                timeline_html += f'<div class="timeline-segment" style="width:{width}%; left:{left}%; background:#ff9f1c;" title="{fx["label"]}: {fx["start"]:.1f}s">{fx["label"][:2]}</div>'
+            timeline_html += '</div>'
+            st.markdown(timeline_html, unsafe_allow_html=True)
+
+            for i, fx in enumerate(fx_markers):
+                cols = st.columns([2, 2, 1, 1, 0.8])
+                cols[0].write(f"{fx['start']:.1f}s")
+                cols[1].write(fx["label"])
+                cols[2].write(f"Vol: {fx['volume']:.1f}")
+                if "duration" in fx:
+                    cols[3].write(f"Dur: {fx['duration']:.1f}s")
+                if cols[4].button("✖️", key=f"del_fx_{i}"):
+                    fx_markers.pop(i)
+                    st.rerun()
+        else:
+            st.info("Nenhum efeito adicionado ainda.")
+
+        with st.expander("➕ Adicionar efeito sonoro", expanded=False):
+            FX_CATALOG_UI = {
+                "🖱️ Click Mouse": "click_mouse",
+                "🖱️ Double Click": "double_click",
+                "⌨️ Teclado": "teclado",
+                "↩️ Tecla Enter": "tecla_enter",
+                "🔔 Alerta Suave": "alerta_suave",
+                "🚨 Alerta Urgente": "alerta_urgente",
+                "💨 Woosh": "woosh",
+                "💨 Swoosh Pesado": "swoosh_heavy",
+                "💬 Pop": "pop",
+                "🔔 Ding": "ding",
+                "📱 Notificação": "notificacao",
+                "❌ Erro": "erro",
+                "✅ Sucesso": "sucesso",
+                "📸 Flash Câmera": "camera_flash",
+                "⬆️ Swoosh Up": "swoosh_up",
+                "⬇️ Swoosh Down": "swoosh_down",
+                "🪙 Coin": "coin",
+                "⚡ Power Up": "power_up",
+            }
+            col1, col2 = st.columns(2)
+            with col1:
+                fx_label = st.selectbox("Efeito:", list(FX_CATALOG_UI.keys()), key="fx_sel")
+                fx_start = st.number_input("Início (s):", 0.0, dur_total, 0.0, 0.5, key="fx_start")
+            with col2:
+                fx_volume = st.slider("Volume:", 0.1, 2.0, 1.0, 0.1, key="fx_vol")
+                fx_duration = st.number_input("Duração (s) – opcional:", 0.0, 10.0, 0.0, 0.5, key="fx_dur",
+                                              help="Deixe 0 para usar a duração natural do efeito.")
+            if st.button("Adicionar Efeito", key="add_fx_btn"):
+                if fx_start < dur_total:
+                    fx_name = FX_CATALOG_UI[fx_label]
+                    new_fx = {
+                        "name": fx_name,
+                        "label": fx_label,
+                        "start": fx_start,
+                        "volume": fx_volume,
+                    }
+                    if fx_duration > 0:
+                        new_fx["duration"] = fx_duration
+                    fx_markers.append(new_fx)
+                    st.rerun()
+                else:
+                    st.warning("Início deve ser menor que a duração total.")
+
+        # ---------------------------------------------------------------------
+        # PASSO 4: LEGENDA SINCRONIZADA
+        # ---------------------------------------------------------------------
+        st.markdown("---")
+        st.markdown("### ✍️ 4. LEGENDA SINCRONIZADA")
         st.markdown("""
         <div class="card co" style="font-size:.88rem;">
-        O texto abaixo será distribuído <b>proporcionalmente ao tempo de leitura</b>
-        dentro do intervalo de tempo que você escolher (início e fim).
+        O texto será distribuído proporcionalmente ao tempo de leitura (WPM) 
+        dentro do intervalo escolhido.
         </div>
         """, unsafe_allow_html=True)
 
@@ -2895,11 +3982,11 @@ def tab_montagem():
             wpm = st.slider(
                 "📖 Velocidade de leitura (WPM):",
                 min_value=80, max_value=300, value=150, step=10, key="mont_wpm",
-                help="Palavras por minuto. 150 = leitura normal. 100 = lenta. 200 = rápida. Ignorado se usar timestamps."
+                help="Palavras por minuto. 150 = leitura normal. Ignorado se usar timestamps."
             )
         with col_vel:
             vel_label = "🐢 Lenta" if wpm < 110 else ("⚡ Rápida" if wpm > 190 else "🚶 Normal")
-            st.markdown(f"<br><div class='card cg' style='text-align:center;padding:.6rem;'>"
+            st.markdown(f"<div class='card cg' style='text-align:center;padding:.6rem;'>"
                         f"<b>{vel_label}</b><br>{wpm} WPM</div>", unsafe_allow_html=True)
 
         st.markdown("#### ⏱️ Intervalo de exibição da legenda")
@@ -2919,14 +4006,21 @@ def tab_montagem():
             legenda_end = legenda_start + 1.0
         legenda_duration = legenda_end - legenda_start
 
-        # ---- Processamento da legenda: timestamps ou WPM ----
         legenda_blocks_abs = []
         timestamp_pattern = re.compile(r'^\[\s*(\d+(?:\.\d+)?)\s*\]\s*(.*)$')
         lines = legenda_texto.strip().split('\n')
         has_timestamps = any(timestamp_pattern.match(line) for line in lines)
 
+        # Modo de legenda (usado na geração)
+        modo_legenda = st.radio(
+            "Modo de exibição da legenda:",
+            ["Blocos proporcionais ao WPM", "Uma legenda por slide", "Sem legenda"],
+            index=0,
+            key="mont_modo_leg",
+            help="Como a legenda será exibida nos slides."
+        )
+
         if has_timestamps and legenda_texto.strip():
-            # Modo manual: usar timestamps fornecidos pelo usuário
             blocks_raw = []
             for line in lines:
                 match = timestamp_pattern.match(line)
@@ -2935,7 +4029,6 @@ def tab_montagem():
                     text = match.group(2).strip()
                     if text:
                         blocks_raw.append((text, start, None))
-            # Calcular fins: cada bloco vai até o próximo início ou até legenda_end
             for i in range(len(blocks_raw)):
                 txt, start, _ = blocks_raw[i]
                 end = blocks_raw[i+1][1] if i+1 < len(blocks_raw) else legenda_end
@@ -2943,7 +4036,6 @@ def tab_montagem():
                     legenda_blocks_abs.append((txt, start, min(end, legenda_end)))
             st.info(f"📌 Modo manual: {len(legenda_blocks_abs)} blocos com timestamps.")
         else:
-            # Modo automático: divisão proporcional pelo WPM
             if legenda_texto.strip():
                 blocks_rel = _split_text_by_time(legenda_texto.strip(), legenda_duration, wpm)
                 legenda_blocks_abs = [(txt, legenda_start + t0, legenda_start + t1) for (txt, t0, t1) in blocks_rel]
@@ -2967,12 +4059,22 @@ def tab_montagem():
                 if len(legenda_blocks_abs) > 5:
                     st.caption(f"... e mais {len(legenda_blocks_abs)-5} blocos.")
 
+        # Textos individuais por slide (se modo selecionado)
+        slide_texts = []
+        if modo_legenda == "Uma legenda por slide" and imgs_up:
+            st.markdown("**📝 Texto por slide (opcional):**")
+            for i in range(n_imgs):
+                slide_texts.append(
+                    st.text_input(f"Slide {i+1}:", key=f"slide_txt_{i}",
+                                  placeholder=f"Legenda do slide {i+1}...")
+                )
+
         st.markdown("---")
 
-        # ---- Arte do texto (tipografia) e preview ao vivo ----
-        st.markdown("### 🎨 Arte do Texto — Configuração Tipográfica")
-        st.markdown("Abaixo, configure todos os aspectos da legenda. O preview é atualizado instantaneamente sobre a primeira imagem carregada.")
-
+        # ---------------------------------------------------------------------
+        # PASSO 5: ARTE DO TEXTO
+        # ---------------------------------------------------------------------
+        st.markdown("### 🎨 5. ARTE DO TEXTO")
         font_names, font_paths = get_available_fonts()
         if not font_names:
             font_names = ["Padrão"]
@@ -2981,8 +4083,7 @@ def tab_montagem():
         with st.expander("🖋️ Fonte, Tamanho & Cor", expanded=True):
             tf_c1, tf_c2, tf_c3 = st.columns(3)
             with tf_c1:
-                font_size = st.slider("Tamanho da fonte (px):", 18, 200, 48, key="tf_size",
-                                      help="Tamanho em pixels. Recomendado entre 36 e 72 para 1280x720.")
+                font_size = st.slider("Tamanho da fonte (px):", 18, 200, 48, key="tf_size")
                 font_choice = st.selectbox("Fonte:", font_names, key="tf_font_choice")
                 font_path = font_paths.get(font_choice, "")
             with tf_c2:
@@ -3009,19 +4110,17 @@ def tab_montagem():
                 bg_box = st.checkbox("Ativar caixa de fundo", value=False, key="tf_bgbox")
                 bg_box_color = st.color_picker("Cor da caixa:", "#000000", key="tf_bgbox_color")
             with bg_c2:
-                bg_box_alpha = st.slider("Opacidade da caixa (%):", 10, 100, 60, key="tf_bgbox_alpha",
-                                         help="100 = totalmente opaco, 0 = transparente.")
+                bg_box_alpha = st.slider("Opacidade da caixa (%):", 10, 100, 60, key="tf_bgbox_alpha")
 
-        st.markdown("---")
-        st.markdown("### 👁️ Preview ao Vivo (como ficará no vídeo)")
+        st.markdown("### 👁️ Preview ao Vivo")
         preview_img = None
         if imgs_up:
             preview_img = Image.open(imgs_up[0]).convert("RGB")
             preview_img.thumbnail((640, 360), Image.LANCZOS)
-            st.caption(f"Preview sobre a primeira imagem: **{imgs_up[0].name}** (redimensionado)")
+            st.caption(f"Preview sobre: **{imgs_up[0].name}**")
         else:
             preview_img = Image.new("RGB", (640, 360), color=(30, 30, 50))
-            st.caption("Nenhuma imagem carregada. Preview genérico.")
+            st.caption("Nenhuma imagem. Preview genérico.")
 
         texto_exemplo = legenda_texto.strip() if legenda_texto.strip() else "Texto de exemplo\nAqui você pode ver como ficará a legenda."
         if len(texto_exemplo) > 200:
@@ -3048,16 +4147,16 @@ def tab_montagem():
                 bg_box_color=bg_box_color,
                 bg_box_alpha=bg_box_alpha,
             )
-            st.image(preview_result, caption="Preview estático (não animado) - resultado final similar", use_container_width=True)
+            st.image(preview_result, caption="Preview estático (resultado similar)", use_container_width=True)
         except Exception as e:
             st.error(f"Erro no preview: {e}")
 
         st.markdown("---")
 
-        # ---- Timeline de animação da legenda (segmentos) ----
-        st.markdown("### ⏱️ Timeline da Animação da Legenda")
-        st.markdown("Defina intervalos de tempo onde a legenda será animada. Fora deles, a legenda fica estática.")
-
+        # ---------------------------------------------------------------------
+        # PASSO 6: TIMELINE DE ANIMAÇÃO DA LEGENDA
+        # ---------------------------------------------------------------------
+        st.markdown("### ⏱️ 6. TIMELINE DE ANIMAÇÃO DA LEGENDA")
         if "text_animation_segments" not in st.session_state:
             st.session_state.text_animation_segments = []
         segments = st.session_state.text_animation_segments
@@ -3076,18 +4175,16 @@ def tab_montagem():
                 cols = st.columns([2, 2, 1])
                 cols[0].write(f"{seg['start']:.1f}s → {seg['end']:.1f}s")
                 cols[1].write(seg['type'])
-                if cols[2].button("✖️", key=f"del_anim_seg_{i}", help="Remover este segmento"):
+                if cols[2].button("✖️", key=f"del_anim_seg_{i}"):
                     segments.pop(i)
                     st.rerun()
         else:
-            st.info("Nenhum segmento de animação definido. A legenda ficará estática durante todo o vídeo.")
+            st.info("Nenhum segmento definido. Legenda ficará estática.")
 
         with st.expander("➕ Adicionar intervalo de animação", expanded=False):
             c1, c2 = st.columns(2)
-            start = c1.number_input("Início (s)", 0.0, dur_total, 0.0, 0.5, key="anim_start",
-                                    help="Momento em que a animação começa.")
-            end = c2.number_input("Fim (s)", 0.0, dur_total, min(dur_total, start + 2.0), 0.5, key="anim_end",
-                                  help="Momento em que a animação termina.")
+            start = c1.number_input("Início (s)", 0.0, dur_total, 0.0, 0.5, key="anim_start")
+            end = c2.number_input("Fim (s)", 0.0, dur_total, min(dur_total, start + 2.0), 0.5, key="anim_end")
             anim_choice = st.selectbox("Tipo de animação:", list(ANIM_OPTIONS.keys()), key="anim_type_choice")
             if st.button("Adicionar Segmento", key="add_anim_seg"):
                 if start < end:
@@ -3096,57 +4193,148 @@ def tab_montagem():
                 else:
                     st.warning("O fim deve ser maior que o início.")
 
-        # ---- Configurações gerais de vídeo ----
-        st.markdown("### ⚙️ Configurações de Vídeo")
-        st.markdown("#### 🎭 Animação da Legenda")
-        anim_c1, anim_c2 = st.columns([2, 1])
-        with anim_c1:
-            anim_type = st.selectbox(
-                "Tipo de animação (padrão se não houver segmentos):",
-                list(ANIM_OPTIONS.keys()),
-                key="mont_anim",
-                help="Define como a legenda se move durante cada slide."
-            )
-        with anim_c2:
-            st.markdown(f"<br><div class='card cl' style='font-size:.82rem;padding:.6rem;'>"
-                        f"ℹ️ {ANIM_OPTIONS[anim_type]}</div>", unsafe_allow_html=True)
+        # Animação padrão (quando não há segmento específico)
+        anim_type = st.selectbox(
+            "Animação padrão (fora dos segmentos):",
+            list(ANIM_OPTIONS.keys()),
+            index=0,
+            key="mont_anim_default",
+            help="Aplicada nos momentos em que nenhum segmento de animação estiver ativo."
+        )
 
+        # ---------------------------------------------------------------------
+        # PASSO 7: CONFIGURAÇÕES DE VÍDEO (apenas transição, resolução e qualidade)
+        # ---------------------------------------------------------------------
         st.markdown("---")
-        vc1, vc2 = st.columns(2)
-        with vc1:
+        st.markdown("### ⚙️ 7. CONFIGURAÇÕES DE VÍDEO")
+
+        col_v1, col_v2 = st.columns(2)
+        with col_v1:
             transition_frames = st.slider(
                 "Frames de transição entre slides:", 0, 24, 8, key="mont_trans",
-                help="0 = corte seco. 8-12 = dissolve suave. 24 = dissolve lento."
+                help="0 = corte seco. 8-12 = dissolve suave."
             )
-        with vc2:
-            modo_legenda = st.selectbox(
-                "Modo de legenda:",
-                ["Blocos proporcionais ao WPM", "Uma legenda por slide", "Sem legenda"],
-                key="mont_modo_leg",
-                help="Blocos WPM = legenda muda no tempo de leitura. Por slide = texto fixo por imagem."
+        with col_v2:
+            resolucao = st.selectbox(
+                "Resolução de saída:",
+                ["1280x720 (HD)", "1920x1080 (Full HD)", "854x480 (SD)", "640x360 (Baixa)"],
+                index=0,
+                key="video_resolution",
+                help="A resolução final do vídeo. As imagens serão redimensionadas para este tamanho."
+            )
+            qualidade = st.select_slider(
+                "Qualidade do vídeo:",
+                options=["Baixa", "Média", "Alta", "Máxima"],
+                value="Alta",
+                key="video_quality",
+                help="Afeta o bitrate e a compressão. Máxima = arquivo maior, melhor qualidade."
             )
 
-        slide_texts = []
-        if modo_legenda == "Uma legenda por slide" and imgs_up:
-            st.markdown("**📝 Texto por slide (opcional):**")
-            for i in range(n_imgs):
-                slide_texts.append(
-                    st.text_input(f"Slide {i+1}:", key=f"slide_txt_{i}",
-                                  placeholder=f"Legenda do slide {i+1}...")
+        res_map = {
+            "1280x720 (HD)": (1280, 720),
+            "1920x1080 (Full HD)": (1920, 1080),
+            "854x480 (SD)": (854, 480),
+            "640x360 (Baixa)": (640, 360),
+        }
+        vid_width, vid_height = res_map[resolucao]
+
+        qual_map = {
+            "Baixa": {"crf": 28, "preset": "fast"},
+            "Média": {"crf": 23, "preset": "medium"},
+            "Alta": {"crf": 18, "preset": "slow"},
+            "Máxima": {"crf": 15, "preset": "slower"},
+        }
+        vid_crf = qual_map[qualidade]["crf"]
+        vid_preset = qual_map[qualidade]["preset"]
+
+        st.caption(f"🎞️ Resolução: {vid_width}x{vid_height} | Qualidade: {qualidade} (CRF {vid_crf})")
+
+        # ---------------------------------------------------------------------
+        # PASSO 8: MOLDURA PARA IMAGENS (com estado persistente)
+        # ---------------------------------------------------------------------
+        st.markdown("---")
+        st.markdown("### 🖼️ 8. MOLDURA PARA IMAGENS")
+        st.markdown("Escolha uma moldura para aplicar a todas as imagens da montagem.")
+
+        if "mont_frame_state" not in st.session_state:
+            st.session_state.mont_frame_state = {
+                "tipo": "Nenhuma",
+                "cor": "#FFFFFF",
+                "espessura": 15,
+                "fit_mode": "Cobrir (cortar)"
+            }
+
+        col_m1, col_m2 = st.columns(2)
+        with col_m1:
+            moldura_tipo = st.selectbox(
+                "Tipo de moldura:",
+                list(FRAME_DB.keys()),
+                index=list(FRAME_DB.keys()).index(st.session_state.mont_frame_state["tipo"]),
+                key="mont_frame_type_selector",
+                help="Selecione 'Nenhuma' para não aplicar moldura."
+            )
+            ajuste_modo = st.radio(
+                "Modo de ajuste da imagem:",
+                ["Cobrir (cortar)", "Enquadrar (barras)"],
+                index=0 if st.session_state.mont_frame_state["fit_mode"] == "Cobrir (cortar)" else 1,
+                key="mont_fit_mode_radio",
+                help="'Cobrir' preenche todo o quadro (pode cortar). 'Enquadrar' mantém a imagem inteira com barras."
+            )
+            st.session_state.mont_frame_state["tipo"] = moldura_tipo
+            st.session_state.mont_frame_state["fit_mode"] = ajuste_modo
+
+        with col_m2:
+            if moldura_tipo != "Nenhuma":
+                frame_info = FRAME_DB[moldura_tipo]
+                moldura_cor = st.color_picker(
+                    "Cor da moldura:",
+                    value=st.session_state.mont_frame_state["cor"],
+                    key="mont_frame_color_picker"
                 )
+                moldura_espessura = st.slider(
+                    "Espessura da moldura:",
+                    min_value=frame_info.get("min", 3),
+                    max_value=frame_info.get("max", 50),
+                    value=st.session_state.mont_frame_state["espessura"],
+                    key="mont_frame_thick_slider"
+                )
+                st.session_state.mont_frame_state["cor"] = moldura_cor
+                st.session_state.mont_frame_state["espessura"] = moldura_espessura
+            else:
+                moldura_cor = "#FFFFFF"
+                moldura_espessura = 10
+                st.caption("Nenhuma moldura selecionada.")
 
-        # ---- Roteiro de montagem (TXT + texto com timestamps para copiar) ----
+        if imgs_up:
+            st.markdown("**👁️ Preview da moldura:**")
+            preview_img_moldura = Image.open(imgs_up[0]).convert("RGB")
+            preview_img_moldura = _resize_image_for_frame(
+                preview_img_moldura, vid_width, vid_height,
+                mode="cover" if ajuste_modo == "Cobrir (cortar)" else "contain"
+            )
+            if moldura_tipo != "Nenhuma":
+                frame_cfg = {
+                    "tipo": moldura_tipo,
+                    "cor": moldura_cor,
+                    "espessura": moldura_espessura
+                }
+                preview_img_moldura = apply_frame(preview_img_moldura, frame_cfg)
+            st.image(preview_img_moldura, caption=f"Preview com moldura ({vid_width}x{vid_height})", use_container_width=True)
+
+        # ---------------------------------------------------------------------
+        # ROTEIRO TXT
+        # ---------------------------------------------------------------------
         st.markdown("---")
         st.markdown("### 📄 Roteiro de Montagem")
-
-        if st.button("📄 Gerar Roteiro TXT", key="gen_rot", use_container_width=True,
-                     help="Cria arquivo TXT com sequência, tempos e blocos de legenda."):
+        if st.button("📄 Gerar Roteiro TXT", key="gen_rot", use_container_width=True):
             rot = f"ROTEIRO DE MONTAGEM SINCRONIZADA — {st.session_state.project_name}\n"
             rot += f"Gerado: {datetime.now().strftime('%d/%m/%Y %H:%M')}\n"
             rot += "=" * 65 + "\n\n"
             rot += f"Total imagens : {n_imgs}\n"
             rot += f"Duração total : {dur_total:.1f}s\n"
             rot += f"Seg/slide     : {secs_each:.1f}s\n"
+            rot += f"Resolução     : {vid_width}x{vid_height}\n"
+            rot += f"Qualidade     : {qualidade} (CRF {vid_crf})\n"
             rot += f"WPM leitura   : {wpm}\n"
             rot += f"Intervalo legenda: {legenda_start:.1f}s → {legenda_end:.1f}s\n"
             rot += f"Transição     : {transition_frames} frames dissolve\n\n"
@@ -3165,8 +4353,9 @@ def tab_montagem():
             rot += f"  Sombra: {'Sim' if shadow else 'Não'} | Contorno: {'Sim' if outline else 'Não'}\n"
             rot += f"  Caixa fundo: {'Sim' if bg_box else 'Não'}\n"
             rot += "\nINSTRUÇÕES EXPORTAÇÃO:\n" + "-" * 40 + "\n"
-            rot += "  Resolução: 1280×720 (HD)\n"
-            rot += "  Codec vídeo: H.264 | Codec áudio: AAC 192kbps\n"
+            rot += f"  Resolução: {vid_width}×{vid_height}\n"
+            rot += f"  Codec vídeo: H.264 (CRF {vid_crf}, preset {vid_preset})\n"
+            rot += "  Codec áudio: AAC 192kbps\n"
             rot += "  Formato: MP4\n"
 
             st.download_button(
@@ -3176,23 +4365,22 @@ def tab_montagem():
             )
             st.success("✅ Roteiro gerado!")
 
-        # Exibir texto com timestamps para copiar e colar (apenas se houver blocos e modo automático)
         if legenda_blocks_abs and modo_legenda == "Blocos proporcionais ao WPM" and not has_timestamps:
-            st.markdown("#### 📋 Texto com timestamps (copie e cole no campo '📝 Texto da legenda completa')")
+            st.markdown("#### 📋 Texto com timestamps (para copiar)")
             texto_timestamp = format_legenda_com_timestamps(legenda_blocks_abs)
-            st.text_area("Texto pronto para copiar:", value=texto_timestamp, height=150, key="timestamp_text")
-            st.caption("Cole este texto no campo '📝 Texto da legenda completa' para usar os tempos manualmente (substitui o WPM).")
+            st.text_area("Texto pronto:", value=texto_timestamp, height=150, key="timestamp_text")
+            st.caption("Cole no campo de legenda para usar tempos manuais.")
 
-        # ---- Geração do vídeo final ----
+        # ---------------------------------------------------------------------
+        # GERAÇÃO DO VÍDEO FINAL
+        # ---------------------------------------------------------------------
         st.markdown("---")
         st.markdown("### 🎬 Gerar Vídeo MP4")
 
-        if not audio_up:
-            st.warning("⚠️ Para gerar o vídeo, envie um áudio acima. Sem áudio, apenas o roteiro TXT está disponível.")
+        if not audio_bytes:
+            st.warning("⚠️ É necessário ter um áudio (trilha montada) para gerar o vídeo.")
         else:
-            if st.button("🚀 GERAR VÍDEO SINCRONIZADO", type="primary",
-                         key="gen_vid", use_container_width=True,
-                         help="Processa imagens + legenda + áudio e exporta MP4."):
+            if st.button("🚀 GERAR VÍDEO SINCRONIZADO", type="primary", key="gen_vid", use_container_width=True):
 
                 text_cfg = {
                     "font_size": font_size,
@@ -3218,32 +4406,85 @@ def tab_montagem():
                         blks = [b[0] for b in legenda_blocks_abs if b[1] < t_slide_end and b[2] > t_slide_start]
                         txt = "\n".join(blks) if blks else ""
                         pil = Image.open(f)
-                        slides_data.append((pil, secs_each, txt, text_cfg))
+                        adj = st.session_state.image_adjustments[i]
+                        slides_data.append((pil, secs_each, txt, text_cfg, adj))
                 elif modo_legenda == "Uma legenda por slide":
                     for i, f in enumerate(imgs_up):
                         pil = Image.open(f)
                         txt = slide_texts[i] if i < len(slide_texts) else ""
-                        slides_data.append((pil, secs_each, txt, text_cfg))
+                        adj = st.session_state.image_adjustments[i]
+                        slides_data.append((pil, secs_each, txt, text_cfg, adj))
                 else:  # Sem legenda
-                    for f in imgs_up:
+                    for i, f in enumerate(imgs_up):
                         pil = Image.open(f)
-                        slides_data.append((pil, secs_each, "", text_cfg))
+                        adj = st.session_state.image_adjustments[i]
+                        slides_data.append((pil, secs_each, "", text_cfg, adj))
 
                 out_path = os.path.join(st.session_state.working_dir, f"montagem_{st.session_state.project_name}.mp4")
                 prog_bar = st.progress(0.0, text="Processando slides...")
+                
                 def progress_cb(v):
                     prog_bar.progress(min(v, 1.0), text=f"Renderizando... {int(v*100)}%")
 
                 try:
-                    with st.spinner("🎬 Gerando vídeo — pode levar alguns minutos..."):
-                        _build_video_from_slides(
-                            slides_data, audio_bytes, audio_ext,
-                            fps=24, transition_frames=transition_frames,
-                            output_path=out_path, progress_cb=progress_cb,
+                    with st.spinner("🎬 Gerando vídeo em alta qualidade — pode levar alguns minutos..."):
+                        # Aplica volume à música base
+                        final_audio_bytes = audio_bytes
+                        final_audio_ext = audio_ext
+                        if musica_volume != 1.0 and audio_bytes:
+                            import tempfile
+                            tmp_vol = tempfile.NamedTemporaryFile(delete=False, suffix=f".{audio_ext}")
+                            tmp_vol.write(audio_bytes)
+                            tmp_vol.close()
+                            vol_out = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+                            vol_out.close()
+                            cmd_vol = [
+                                "ffmpeg", "-y", "-i", tmp_vol.name,
+                                "-af", f"volume={musica_volume}",
+                                "-acodec", "pcm_s16le", vol_out.name
+                            ]
+                            subprocess.run(cmd_vol, capture_output=True, timeout=60)
+                            with open(vol_out.name, "rb") as f:
+                                final_audio_bytes = f.read()
+                            final_audio_ext = "wav"
+                            os.unlink(tmp_vol.name)
+                            os.unlink(vol_out.name)
+
+                        if st.session_state.sound_fx_markers:
+                            with st.spinner("Mixando efeitos sonoros..."):
+                                final_audio_bytes = _mix_sound_effects(
+                                    final_audio_bytes,
+                                    final_audio_ext,
+                                    st.session_state.sound_fx_markers,
+                                    dur_total
+                                )
+                                final_audio_ext = "wav"
+
+                        _build_video_from_slides_enhanced(
+                            slides_data,
+                            final_audio_bytes,
+                            final_audio_ext,
+                            fps=24,
+                            transition_frames=transition_frames,
+                            output_path=out_path,
+                            progress_cb=progress_cb,
                             animation_segments=st.session_state.text_animation_segments,
                             default_anim_type=anim_type,
                             legenda_interval_start=legenda_start,
                             legenda_interval_end=legenda_end,
+                            target_width=vid_width,
+                            target_height=vid_height,
+                            crf=vid_crf,
+                            preset=vid_preset,
+                            audio_loop=st.session_state.get("audio_loop", False),
+                            total_duration=dur_total,
+                            frame_config={
+                                "tipo": moldura_tipo,
+                                "cor": moldura_cor,
+                                "espessura": moldura_espessura
+                            } if moldura_tipo != "Nenhuma" else None,
+                            fit_mode="cover" if ajuste_modo == "Cobrir (cortar)" else "contain",
+                            background_config=st.session_state.background_config   # <-- NOVO
                         )
 
                     if os.path.exists(out_path) and os.path.getsize(out_path) > 1000:
@@ -3251,7 +4492,7 @@ def tab_montagem():
                         with open(out_path, "rb") as vf:
                             vid_bytes = vf.read()
                         st.session_state["_export_video"] = vid_bytes
-                        st.success("🎉 Vídeo gerado com sucesso!")
+                        st.success(f"🎉 Vídeo gerado com sucesso! ({vid_width}x{vid_height}, {qualidade})")
                         st.video(vid_bytes)
                         st.download_button(
                             "⬇️ Baixar MP4",
@@ -3267,7 +4508,7 @@ def tab_montagem():
                 except Exception as e:
                     st.error(f"❌ Erro durante geração: {e}")
                     st.code(traceback.format_exc(), language="python")
-                                                    
+                                                                                                                
 def tab_export():
     st.markdown('<div class="stitle">📦 EXPORTAÇÃO & STATUS</div>', unsafe_allow_html=True)
     col_l, col_r = st.columns(2)
