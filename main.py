@@ -3647,13 +3647,17 @@ def _build_video_from_slides_enhanced(
     total_duration: float = None,
     frame_config: Dict = None,
     fit_mode: str = "cover",
-    background_config: Dict = None   # <-- NOVO PARÂMETRO
+    background_config: Dict = None,
+    dynamic_text: bool = False,          # NOVO PARÂMETRO
+    legenda_blocks: List = None           # NOVO: lista de (texto, t0, t1)
 ) -> str:
     import subprocess
     import tempfile
 
     if animation_segments is None:
         animation_segments = []
+    if legenda_blocks is None:
+        legenda_blocks = []
 
     tmp_dir = tempfile.mkdtemp(prefix="mont_vid_enh_")
     frame_idx = 0
@@ -3671,14 +3675,11 @@ def _build_video_from_slides_enhanced(
         else:
             pil_img, dur_s, text, tcfg, adj = slide_data
 
-        # Ajustes individuais (zoom, offset, modo)
         mode = adj.get("mode", fit_mode)
         zoom = adj.get("zoom", 1.0)
         off_x = adj.get("offset_x", 0.0)
         off_y = adj.get("offset_y", 0.0)
 
-        # Aplica ajustes e redimensionamento
-        # Determina o fundo
         bg = None
         if background_config:
             if background_config["type"] == "Cor sólida":
@@ -3686,34 +3687,26 @@ def _build_video_from_slides_enhanced(
             elif background_config["type"] == "Imagem" and background_config.get("image"):
                 bg = background_config["image"]
 
-        # Aplica ajustes e redimensionamento (com fundo, se houver)
         slide_img = _apply_image_adjustment(
             pil_img, target_width, target_height,
             mode=mode, zoom=zoom, offset_x=off_x, offset_y=off_y,
             background=bg
         )
-        # Aplica moldura global, se configurada
-        if frame_config and frame_config.get("tipo") != "Nenhuma":
+        if isinstance(frame_config, dict) and frame_config.get("tipo") != "Nenhuma":
             slide_img = apply_frame(slide_img, frame_config)
         slide_img = slide_img.convert("RGB")
 
         base_bgr = cv2.cvtColor(np.array(slide_img), cv2.COLOR_RGB2BGR)
         n_frames = max(1, int(dur_s * fps))
+        # Pré-renderiza a camada de texto para o slide (pode ser ignorada se dynamic_text=True)
         text_layer = _render_text_layer(text or "", target_width, target_height, tcfg)
 
-        # ── Helper interno: calcula interval_progress corretamente ──────────────
         def _calc_interval_progress(t_g: float) -> Optional[float]:
-            """
-            Retorna progresso 0..1 dentro do intervalo de legenda, ou None se fora.
-            CORREÇÃO: quando não há intervalo configurado (end==start==0), usa o
-            progresso relativo ao slide atual para que a animação SEMPRE funcione.
-            """
             if legenda_interval_end > legenda_interval_start:
                 if legenda_interval_start <= t_g <= legenda_interval_end:
                     span = legenda_interval_end - legenda_interval_start
                     return max(0.0, min(1.0, (t_g - legenda_interval_start) / span))
                 return None
-            # Sem intervalo definido: anima durante todo o slide atual
             slide_start_t = global_time
             slide_end_t   = global_time + dur_s
             if slide_start_t <= t_g <= slide_end_t:
@@ -3721,13 +3714,21 @@ def _build_video_from_slides_enhanced(
                 return max(0.0, min(1.0, (t_g - slide_start_t) / span))
             return None
 
-        # ── Helper: resolve tipo de animação com fallback para default ───────
         def _resolve_anim(t_g: float) -> str:
             atype = _get_animation_type_at_time(animation_segments, t_g)
-            # Se retornou Estático E há um default diferente, usa o default
             if atype == "Estático" and default_anim_type and default_anim_type != "Estático":
                 return default_anim_type
             return atype
+
+        # --- FUNÇÃO AUXILIAR PARA OBTER O TEXTO ATIVO EM dynamic_text MODE ---
+        def _get_active_text(t_g: float) -> str:
+            if not dynamic_text or not legenda_blocks:
+                return text  # fallback para o texto fixo do slide
+            # Procura o bloco cujo intervalo contém t_g
+            for blk_text, t0, t1 in legenda_blocks:
+                if t0 <= t_g <= t1:
+                    return blk_text
+            return ""  # fora de qualquer bloco, sem texto
 
         # Transição dissolve
         if si > 0 and transition_frames > 0:
@@ -3740,9 +3741,13 @@ def _build_video_from_slides_enhanced(
                 anim_type_tf = _resolve_anim(t_global_tf)
                 ip = _calc_interval_progress(t_global_tf)
 
+                # ---- NOVO: seleciona texto dinâmico se habilitado ----
+                current_text = _get_active_text(t_global_tf) if dynamic_text else (text or "")
+                current_layer = _render_text_layer(current_text, target_width, target_height, tcfg)
+
                 final_frame = _apply_text_animation(
-                    blended_base, text_layer, anim_type_tf, tf, n_frames, fps,
-                    text or "", tcfg, interval_progress=ip,
+                    blended_base, current_layer, anim_type_tf, tf, n_frames, fps,
+                    current_text, tcfg, interval_progress=ip,
                 )
                 fname = os.path.join(tmp_dir, f"frame_{frame_idx:06d}.jpg")
                 cv2.imwrite(fname, final_frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
@@ -3755,9 +3760,12 @@ def _build_video_from_slides_enhanced(
             anim_type_fi = _resolve_anim(t_global)
             ip = _calc_interval_progress(t_global)
 
+            current_text = _get_active_text(t_global) if dynamic_text else (text or "")
+            current_layer = _render_text_layer(current_text, target_width, target_height, tcfg)
+
             final_frame = _apply_text_animation(
-                base_bgr, text_layer, anim_type_fi, fi, n_frames, fps,
-                text or "", tcfg, interval_progress=ip,
+                base_bgr, current_layer, anim_type_fi, fi, n_frames, fps,
+                current_text, tcfg, interval_progress=ip,
             )
             fname = os.path.join(tmp_dir, f"frame_{frame_idx:06d}.jpg")
             cv2.imwrite(fname, final_frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
@@ -4847,6 +4855,11 @@ def tab_montagem():
                                 )
                                 final_audio_ext = "wav"
 
+                        # Dentro do if st.button("🚀 GERAR VÍDEO SINCRONIZADO"):
+
+                        # Verifica se deve usar o modo dinâmico (apenas 1 imagem E temos blocos de legenda)
+                        usar_dynamic_text = (n_imgs == 1) and (len(legenda_blocks_abs) > 0)
+
                         _build_video_from_slides_enhanced(
                             slides_data,
                             final_audio_bytes,
@@ -4869,9 +4882,11 @@ def tab_montagem():
                                 "tipo": moldura_tipo,
                                 "cor": moldura_cor,
                                 "espessura": moldura_espessura
-                            } if moldura_tipo != "Nenhuma" else None,
+                            } if moldura_tipo != "Nenhuma" else None,   # 👈 agora sim um dict
                             fit_mode="cover" if ajuste_modo == "Cobrir (cortar)" else "contain",
-                            background_config=st.session_state.background_config   # <-- NOVO
+                            background_config=st.session_state.background_config,
+                            dynamic_text=usar_dynamic_text,
+                            legenda_blocks=legenda_blocks_abs
                         )
 
                     if os.path.exists(out_path) and os.path.getsize(out_path) > 1000:
