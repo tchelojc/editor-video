@@ -430,6 +430,7 @@ def init_session_state():
         "effect_segments": [],
         "text_animation_segments": [],  # NOVO
         "tutorial_step": 0,
+        "output_format": "YouTube (16:9)",   # <-- ADICIONAR AQUI
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -738,6 +739,39 @@ def apply_text(image: Image.Image, cfg: Dict) -> Image.Image:
                     draw.text((x+dx,y+dy), texto, fill=cc, font=font)
     draw.text((x,y), texto, fill=cor, font=font)
     return img
+
+# --- DENTRO DA ABA EDITOR DE VÍDEO (Exemplo de Implementação da Lógica) ---
+
+def ajustar_timing_proporcional(segmentos_duracao, index_alvo, nova_duracao_alvo, duracao_total):
+    """
+    Ajusta a duração de um segmento e redistribui a diferença nos demais
+    mantendo a duracao_total fixa.
+    """
+    n_segmentos = len(segmentos_duracao)
+    if n_segmentos <= 1: return segmentos_duracao
+    
+    duracao_antiga = segmentos_duracao[index_alvo]
+    diferenca = nova_duracao_alvo - duracao_antiga
+    
+    # Quanto precisamos tirar de cada um dos outros segmentos
+    ajuste_por_segmento = diferenca / (n_segmentos - 1)
+    
+    novos_tempos = []
+    for i, dur in enumerate(segmentos_duracao):
+        if i == index_alvo:
+            novos_tempos.append(nova_duracao_alvo)
+        else:
+            # Garante que o frame não fique com tempo negativo ou zero (mínimo 0.1s)
+            novo_tempo = max(0.1, dur - ajuste_por_segmento)
+            novos_tempos.append(novo_tempo)
+            
+    # Ajuste fino para garantir que a soma seja EXATAMENTE duracao_total (devido a arredondamentos)
+    erro_soma = duracao_total - sum(novos_tempos)
+    # Distribui o erro residual no último segmento que não seja o alvo
+    idx_ajuste_final = (index_alvo + 1) % n_segmentos
+    novos_tempos[idx_ajuste_final] += erro_soma
+    
+    return novos_tempos
 
 # ==============================================================================
 # VÍDEO: CARREGAMENTO E OPERAÇÕES
@@ -1408,6 +1442,79 @@ def tab_ajuda():
 # ABAS PRINCIPAIS (COM TOOLTIPS MELHORADOS)
 # ==============================================================================
 
+def _apply_frame_stretch_ffmpeg(
+    video_path: str,
+    frame_durations: List[float],
+    output_path: str,
+    total_dur: float,
+    fps: int = 24,
+) -> bool:
+    """
+    Reprocessa o vídeo ajustando a duração de cada 'frame zone' (faixa de tempo) sem precisar
+    saber o conteúdo interno — opera sobre timestamps puros via ffmpeg setpts/trim.
+
+    frame_durations: lista de duracões desejadas para cada zona (soma deve ser ≈ total_dur).
+    total_dur: duração total desejada no output (mantida fixo).
+    """
+    import tempfile, subprocess, shutil
+    tmp = tempfile.mkdtemp(prefix="stretch_")
+
+    n = len(frame_durations)
+    if n == 0:
+        return False
+
+    # Calcula timestamps de início de cada zona no vídeo original
+    orig_zone_dur = total_dur / n
+    segments_out = []
+
+    t_out = 0.0
+    for i, new_dur in enumerate(frame_durations):
+        t_in_start = i * orig_zone_dur
+        t_in_end   = t_in_start + orig_zone_dur
+        speed_factor = orig_zone_dur / max(new_dur, 0.01)   # > 1 = acelera, < 1 = lentifica
+
+        seg_path = os.path.join(tmp, f"seg_{i:03d}.mp4")
+
+        # Extrai segmento e ajusta velocidade via setpts
+        cmd = [
+            "ffmpeg", "-y",
+            "-ss", str(t_in_start), "-to", str(t_in_end),
+            "-i", video_path,
+            "-vf", f"setpts={1/speed_factor:.6f}*PTS",
+            "-an",  # sem áudio (será mixado depois)
+            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+            "-pix_fmt", "yuv420p",
+            "-t", str(new_dur),
+            seg_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, timeout=120)
+        if os.path.exists(seg_path) and os.path.getsize(seg_path) > 100:
+            segments_out.append(seg_path)
+        t_out += new_dur
+
+    if not segments_out:
+        shutil.rmtree(tmp, ignore_errors=True)
+        return False
+
+    # Concatena todos os segmentos
+    list_path = os.path.join(tmp, "concat.txt")
+    with open(list_path, "w") as f:
+        for p in segments_out:
+            f.write(f"file '{p}'\n")
+
+    cmd_concat = [
+        "ffmpeg", "-y",
+        "-f", "concat", "-safe", "0",
+        "-i", list_path,
+        "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+        "-pix_fmt", "yuv420p",
+        "-t", str(total_dur),
+        output_path
+    ]
+    result = subprocess.run(cmd_concat, capture_output=True, timeout=300)
+    shutil.rmtree(tmp, ignore_errors=True)
+    return os.path.exists(output_path) and os.path.getsize(output_path) > 1000
+
 def tab_video():
     st.markdown('<div class="stitle">🎞️ EDITOR DE VÍDEO</div>', unsafe_allow_html=True)
 
@@ -1426,26 +1533,246 @@ def tab_video():
 
     dur = float(clip.duration)
 
-# --- Substituição do Player Original e Frames ---
+    def resize_clip(clip_to_resize, target_width: int, target_height: int):
+        """Redimensiona o clipe para a resolução alvo, mantendo a proporção com bordas pretas se necessário."""
+        if clip_to_resize is None:
+            return None
+
+        try:
+            from moviepy.editor import ColorClip, CompositeVideoClip
+        except ImportError:
+            try:
+                from moviepy.video.VideoClip import ColorClip
+                from moviepy.video.compositing.CompositeVideoClip import CompositeVideoClip
+            except ImportError:
+                import numpy as np
+                import cv2
+                def make_frame(t):
+                    frame = clip_to_resize.get_frame(t)
+                    h, w = frame.shape[:2]
+                    scale = min(target_width / w, target_height / h)
+                    new_w = int(w * scale)
+                    new_h = int(h * scale)
+                    resized = cv2.resize(frame, (new_w, new_h))
+                    canvas = np.zeros((target_height, target_width, 3), dtype=np.uint8)
+                    x = (target_width - new_w) // 2
+                    y = (target_height - new_h) // 2
+                    canvas[y:y+new_h, x:x+new_w] = resized
+                    return canvas
+                from moviepy.editor import VideoClip
+                return VideoClip(make_frame, duration=clip_to_resize.duration)
+
+        scale = min(target_width / clip_to_resize.w, target_height / clip_to_resize.h)
+        new_w = int(clip_to_resize.w * scale)
+        new_h = int(clip_to_resize.h * scale)
+
+        try:
+            # Tenta o padrão da versão v2.0+
+            resized = clip_to_resize.resized(new_size=(new_w, new_h))
+        except TypeError:
+            # Fallback para versão v1.0
+            resized = clip_to_resize.resized(newsize=(new_w, new_h))
+
+        bg = ColorClip(size=(target_width, target_height), color=(0, 0, 0), duration=clip_to_resize.duration)
+        try:
+            positioned = resized.with_position("center")
+        except AttributeError:
+            positioned = resized.set_position("center")
+        return CompositeVideoClip([bg, positioned])
+    
+    # --- Função para obter resolução alvo baseada no formato escolhido ---
+    def get_target_resolution():
+        fmt = st.session_state.get("video_editor_output_format", "YouTube (16:9)")
+        if fmt == "YouTube (16:9)":
+            return 1280, 720
+        elif fmt in ["TikTok/Reels (9:16)", "Story (9:16)"]:
+            return 1080, 1920
+        elif fmt == "Quadrado (1:1)":
+            return 1080, 1080
+        else:  # "Manter original"
+            return None, None
+
+    # ── Player original ──────────────────────────────────────────────────────
     st.markdown('<div class="vbox">', unsafe_allow_html=True)
     st.markdown('<div class="vbox-title">▶️ PLAYER DO VÍDEO ORIGINAL</div>', unsafe_allow_html=True)
-    
-    # Colunas para centralizar o player de vídeo
     col_v1, col_v2, col_v3 = st.columns([1, 2, 1])
     with col_v2:
         if st.session_state.video_path and os.path.exists(st.session_state.video_path):
             with open(st.session_state.video_path, "rb") as f:
                 vbytes_orig = f.read()
-            st.video(vbytes_orig) 
+            st.video(vbytes_orig)
     st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown("---")
+
+    # =========================================================================
+    # NOVA SEÇÃO: EDITOR DE TIMING DE FRAMES (Extensão / Compressão)
+    # =========================================================================
+    st.markdown("### ✂️ EDITOR DE TIMING DE FRAMES")
+    st.markdown("""
+    <div class="card co" style="font-size:.88rem;margin-bottom:.8rem;">
+    🎯 <b>Como funciona:</b> O vídeo é dividido em <b>zonas de igual duração</b>.
+    Você escolhe uma zona e altera quanto tempo ela deve durar.
+    Os frames restantes são <b>comprimidos proporcionalmente</b> para manter a
+    duração total do vídeo inalterada.
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Inicializa estado das zonas ──────────────────────────────────────────
+    fz_key = "frame_zones"
+    if fz_key not in st.session_state or st.session_state.get("_fz_dur") != round(dur, 2):
+        n_zones_default = max(2, min(12, int(dur)))
+        zone_dur = dur / n_zones_default
+        st.session_state[fz_key] = [round(zone_dur, 3)] * n_zones_default
+        st.session_state["_fz_dur"] = round(dur, 2)
+
+    zones = st.session_state[fz_key]
+    n_zones = len(zones)
+    total_zones = sum(zones)
+
+    col_nz1, col_nz2 = st.columns([2, 1])
+    with col_nz1:
+        new_n = st.slider(
+            "Número de zonas (divisões):", 2, 20, n_zones, 1, key="fz_n_zones",
+            help="Divida o vídeo em N partes iguais para ajuste individual de tempo."
+        )
+    with col_nz2:
+        if st.button("🔄 Redividir zonas", key="fz_reset",
+                     help="Redistribui o tempo igualmente entre todas as zonas."):
+            zone_dur = dur / new_n
+            st.session_state[fz_key] = [round(zone_dur, 3)] * new_n
+            st.rerun()
+
+    if new_n != n_zones:
+        zone_dur = dur / new_n
+        st.session_state[fz_key] = [round(zone_dur, 3)] * new_n
+        zones = st.session_state[fz_key]
+        n_zones = new_n
+        total_zones = sum(zones)
+
+    # ── Visualização da timeline de zonas ───────────────────────────────────
+    st.markdown("**📊 Timeline das zonas (proporção atual):**")
+    ZONE_COLORS = ["#00e5ff", "#ff4d6d", "#a8ff3e", "#ffd166", "#9b5de5",
+                   "#f15bb5", "#fee440", "#00bbf9", "#00f5d4", "#e9c46a",
+                   "#f4a261", "#e76f51", "#2a9d8f", "#264653", "#457b9d",
+                   "#a8dadc", "#1d3557", "#e63946", "#06d6a0", "#118ab2"]
+    tl_html = '<div class="timeline-bar" style="height:50px;">'
+    t_acc = 0.0
+    for i, zd in enumerate(zones):
+        pct = (zd / max(total_zones, 0.01)) * 100
+        color = ZONE_COLORS[i % len(ZONE_COLORS)]
+        orig_s = i * (dur / n_zones)
+        tl_html += (
+            f'<div class="timeline-segment" '
+            f'style="width:{pct:.1f}%;background:{color};font-size:.65rem;" '
+            f'title="Zona {i+1}: {orig_s:.1f}s orig → {zd:.2f}s novo">'
+            f'Z{i+1}<br>{zd:.1f}s</div>'
+        )
+        t_acc += zd
+    tl_html += '</div>'
+    st.markdown(tl_html, unsafe_allow_html=True)
+
+    # Aviso de desvio
+    delta = total_zones - dur
+    if abs(delta) > 0.1:
+        st.warning(f"⚠️ Soma das zonas ({total_zones:.2f}s) difere da duração original ({dur:.1f}s) em {delta:+.2f}s. "
+                   f"Clique 'Normalizar' para corrigir.")
+        if st.button("⚖️ Normalizar (ajustar proporcionalmente)", key="fz_norm"):
+            factor = dur / total_zones
+            st.session_state[fz_key] = [round(z * factor, 3) for z in zones]
+            st.rerun()
+    else:
+        st.success(f"✅ Total: **{total_zones:.2f}s** (duração original: {dur:.1f}s)")
+
+    # ── Editor de zona individual ─────────────────────────────────────────────
+    st.markdown("**⏱️ Ajustar duração de uma zona:**")
+    col_ze1, col_ze2, col_ze3 = st.columns([1, 2, 1])
+    with col_ze1:
+        zone_idx = st.number_input(
+            "Zona nº:", 1, n_zones, 1, 1, key="fz_idx",
+            help="Número da zona a ajustar (1 = início do vídeo)."
+        )
+    with col_ze2:
+        orig_zone_dur = dur / n_zones
+        current_dur = zones[zone_idx - 1]
+        new_zone_dur = st.slider(
+            f"Duração da zona {zone_idx} (s):",
+            min_value=0.1,
+            max_value=round(dur * 0.9, 1),
+            value=float(current_dur),
+            step=0.05,
+            key="fz_dur_slider",
+            help="Aumente para essa zona durar mais; os demais serão comprimidos na mesma proporção."
+        )
+    with col_ze3:
+        st.markdown("<div style='padding-top:26px'></div>", unsafe_allow_html=True)
+        if st.button("✅ Aplicar", key="fz_apply", type="primary"):
+            novas_zonas = ajustar_timing_proporcional(
+                segmentos_duracao=zones,
+                index_alvo=zone_idx - 1,
+                nova_duracao_alvo=new_zone_dur,
+                duracao_total=dur
+            )
+            st.session_state[fz_key] = novas_zonas
+            st.success(f"Zona {zone_idx}: {zones[zone_idx-1]:.2f}s → {new_zone_dur:.2f}s · Demais reajustados.")
+            st.rerun()
+
+    # ── Preview da zona selecionada ──────────────────────────────────────────
+    col_zprev, col_zgen = st.columns(2)
+    with col_zprev:
+        if st.button("🔍 Ver frame da zona", key="fz_preview_frame",
+                     help="Extrai um frame do meio da zona selecionada para visualização."):
+            t_mid = (zone_idx - 1) * (dur / n_zones) + (dur / n_zones) / 2
+            frame = extract_frame(clip, min(t_mid, dur - 0.1))
+            if frame:
+                st.session_state.video_frame = frame
+                st.session_state.base_image = frame
+                st.session_state._current_frame_sec = t_mid
+                st.success(f"Frame da zona {zone_idx} (t={t_mid:.1f}s) extraído.")
+
+    with col_zgen:
+        if st.button("🎬 GERAR VÍDEO COM TIMING AJUSTADO", type="primary", key="fz_generate",
+                     help="Aplica o novo timing de todas as zonas e exporta o vídeo."):
+            if not st.session_state.video_path or not os.path.exists(st.session_state.video_path):
+                st.error("Caminho do vídeo original não encontrado.")
+            else:
+                out_path = os.path.join(
+                    st.session_state.working_dir,
+                    f"{st.session_state.project_name}_retiming.mp4"
+                )
+                with st.spinner("⏳ Reprocessando timing do vídeo..."):
+                    ok = _apply_frame_stretch_ffmpeg(
+                        video_path=st.session_state.video_path,
+                        frame_durations=st.session_state[fz_key],
+                        output_path=out_path,
+                        total_dur=dur,
+                        fps=24,
+                    )
+                if ok:
+                    with open(out_path, "rb") as vf:
+                        retime_bytes = vf.read()
+                    st.session_state["_export_video"] = retime_bytes
+                    st.success("✅ Vídeo com timing ajustado gerado!")
+                    st.video(retime_bytes)
+                    st.download_button(
+                        "⬇️ Baixar MP4 com Timing Ajustado",
+                        retime_bytes,
+                        f"{st.session_state.project_name}_retiming.mp4",
+                        "video/mp4",
+                        use_container_width=True,
+                        key="dl_retime"
+                    )
+                else:
+                    st.error("❌ Falha. Verifique se FFmpeg está instalado e o vídeo foi carregado.")
+
+    # ── Extração de frame manual ─────────────────────────────────────────────
+    st.markdown("---")
     st.markdown("### 🎯 NAVEGAÇÃO DE FRAMES")
     st.caption("Extraia um frame específico para editar como imagem (útil para thumbnails ou efeitos pontuais).")
-    
-    col_fr1, col_fr2, col_fr3 = st.columns([2,1,1])
+
+    col_fr1, col_fr2, col_fr3 = st.columns([2, 1, 1])
     with col_fr1:
-        t_frame = st.slider("Segundo do frame:", 0.0, dur-0.1,
+        t_frame = st.slider("Segundo do frame:", 0.0, dur - 0.1,
                              st.session_state._current_frame_sec, 0.1, key="frame_slider",
                              help="Deslize para escolher o instante exato do frame.")
     with col_fr2:
@@ -1465,9 +1792,9 @@ def tab_video():
         col_img1, col_img2, col_img3 = st.columns([1, 2, 1])
         with col_img2:
             st.image(st.session_state.video_frame,
-                    caption=f"Frame em {st.session_state._current_frame_sec:.1f}s — use na aba Filtros!",
-                    use_container_width=False)
-        st.markdown("<br>", unsafe_allow_html=True)  # <-- Adicionar esta linha
+                     caption=f"Frame em {st.session_state._current_frame_sec:.1f}s — use na aba Filtros!",
+                     use_container_width=False)
+        st.markdown("<br>", unsafe_allow_html=True)
 
     st.markdown("---")
     st.markdown("### ⏱️ EFEITOS POR TEMPO (TIMELINE)")
@@ -1538,8 +1865,6 @@ def tab_video():
         else:  # Animação
             anim_sel = st.selectbox("Animação", list(ANIMATION_DB.keys()), key="seg_anim")
             params = {"tipo": anim_sel}
-            # Parâmetros adicionais podem ser incluídos aqui se desejar controle fino
-            # Por enquanto, usamos os valores padrão da animação (já aplicados em apply_animation_to_frame)
         if st.button("Adicionar Segmento", key="add_seg_btn",
                      help="Clique para incluir este trecho na timeline."):
             segments.append({"start": start, "end": end, "type": etype, "params": params})
@@ -1565,32 +1890,70 @@ def tab_video():
         for fn in sels_vf:
             vid_filter_cfg[fn] = {p: float(pdef) for p,(_,_,pdef) in FILTER_DB[fn].get("params",{}).items()}
 
+    # --- NOVO: Seletor de formato de saída para exportação ---
+    st.markdown("---")
+    st.markdown("### 📱 FORMATO DE EXPORTAÇÃO")
+    col_fmt1, col_fmt2 = st.columns(2)
+    with col_fmt1:
+        formato_export = st.selectbox(
+            "🎯 Formato de saída:",
+            ["YouTube (16:9)", "TikTok/Reels (9:16)", "Story (9:16)", "Quadrado (1:1)", "Manter original"],
+            index=0,
+            key="video_editor_output_format",
+            help="Escolha o formato do vídeo final. 'Manter original' não redimensiona."
+        )
+    with col_fmt2:
+        st.caption("A resolução será ajustada na exportação.")
+
     col_b1, col_b2, col_b3 = st.columns(3)
+
     with col_b1:
-        if st.button("▶️ Preview (5s)", type="secondary", key="v_prev5",
-                     help="Gera uma prévia de 5 segundos a partir do início do corte, já com todos os efeitos aplicados."):
-            with st.spinner("Processando preview 5s..."):
-                # 1. Aplica os segmentos de efeito (timeline)
+        if st.button("👁️ Preview Completo", type="secondary", key="v_preview_full",
+                    help="Renderiza o vídeo inteiro (do início ao fim do corte) com todos os efeitos aplicados."):
+            with st.spinner("Renderizando preview completo..."):
+                progress_bar = st.progress(0, text="Aplicando efeitos...")
+                
+                # 1. Aplica efeitos da timeline
                 processed = apply_effects_to_clip(clip, segments)
-                # 2. Aplica filtros globais (se selecionados)
+                progress_bar.progress(30, text="Aplicando filtros globais...")
+                
+                # 2. Aplica filtros globais
                 if sels_vf:
                     processed = clip_fl_image(
                         processed,
                         lambda f: np.array(apply_filters(Image.fromarray(f), vid_filter_cfg))
                     )
-                # 3. Aplica corte de 5 segundos
-                pclip = clip_subclip(processed, t_start, min(t_start + 5, t_end))
-                # 4. Exporta para preview
+                
+                # 3. Aplica corte definido pelo usuário (t_start → t_end)
+                progress_bar.progress(60, text="Aplicando corte...")
+                if t_start > 0 or t_end < dur:
+                    pclip = clip_subclip(processed, t_start, t_end)
+                else:
+                    pclip = processed  # vídeo inteiro
+                
+                # 4. Redimensiona para formato escolhido
+                target_w, target_h = get_target_resolution()
+                if target_w is not None and target_h is not None:
+                    pclip = resize_clip(pclip, target_w, target_h)
+                
+                progress_bar.progress(80, text="Exportando...")
                 data = export_clip(pclip)
+                progress_bar.progress(100, text="Concluído!")
+                
                 if data:
                     st.session_state._preview_video = data
-                    st.success("Preview pronto!")
+                    st.success("Preview completo renderizado!")
+                else:
+                    st.error("Falha ao gerar preview.")
 
     with col_b2:
         if st.button("📐 Corte Simples", type="secondary", key="v_cut_only",
-                     help="Exporta apenas o trecho cortado, sem efeitos da timeline ou globais."):
+                    help="Exporta apenas o trecho cortado, sem efeitos da timeline ou globais."):
             with st.spinner("Cortando vídeo..."):
                 exp_clip = clip_subclip(clip, t_start, t_end)
+                target_w, target_h = get_target_resolution()
+                if target_w is not None and target_h is not None:
+                    exp_clip = resize_clip(exp_clip, target_w, target_h)
                 data = export_clip(exp_clip)
                 if data:
                     st.session_state._export_video = data
@@ -1598,8 +1961,8 @@ def tab_video():
 
     with col_b3:
         if st.button("💾 Exportar Completo", type="primary", key="v_exp_full",
-                     help="Renderiza o vídeo final com timeline, filtros globais e corte."):
-            with st.spinner(f"Exportando vídeo com todos os efeitos..."):
+                    help="Renderiza o vídeo final com timeline, filtros globais e corte."):
+            with st.spinner("Exportando vídeo com todos os efeitos..."):
                 # 1. Aplica segmentos da timeline
                 processed = apply_effects_to_clip(clip, segments)
                 # 2. Aplica filtros globais
@@ -1611,12 +1974,16 @@ def tab_video():
                 # 3. Aplica corte final
                 if t_start > 0 or t_end < dur:
                     processed = clip_subclip(processed, t_start, t_end)
-                # 4. Exporta
+                # 4. Redimensiona para formato escolhido
+                target_w, target_h = get_target_resolution()
+                if target_w is not None and target_h is not None:
+                    processed = resize_clip(processed, target_w, target_h)
+                # 5. Exporta
                 data = export_clip(processed)
                 if data:
                     st.session_state._export_video = data
                     st.success("Exportado com sucesso!")
-                    
+                                    
 # --- Substituição do Preview e Download Final ---
     if st.session_state._preview_video:
         st.markdown("---")
@@ -1640,7 +2007,7 @@ def tab_video():
             use_container_width=True,
             key="dl_mp4_final"
         )
-        
+                
 def tab_filtros():
     st.markdown('<div class="stitle">🎨 FILTROS & MOLDURAS & TEXTO</div>', unsafe_allow_html=True)
 
@@ -3079,20 +3446,21 @@ def _apply_text_animation(
 ) -> np.ndarray:
     W = base_bgr.shape[1]
     H = base_bgr.shape[0]
-    
-    # CORREÇÃO AQUI: Se não houver texto ou estivermos fora do intervalo da legenda,
-    # retornamos uma cópia do frame base. Como ele já está em BGR, o cv2.imwrite
-    # vai salvar as cores exatamente como devem ser, sem inverter azul com vermelho.
+
+    # Sem texto: retorna o frame base limpo (BGR)
     if not text or not text.strip():
-        return base_bgr.copy()  
+        return base_bgr.copy()
 
+    # CORREÇÃO DO BUG DE ANIMAÇÃO:
+    # Se interval_progress for None (fora do intervalo de legenda definido),
+    # assume t = 1.0 para que a animação seja renderizada em seu estado final
+    # (totalmente visível em fade, totalmente crescido em zoom, etc.)
     if interval_progress is None:
-        return base_bgr.copy()  
+        t = 1.0
+    else:
+        t = interval_progress
 
-    # Agora estamos dentro do intervalo: usa interval_progress (0..1) para animação
-    t = interval_progress
-
-    # Converte de BGR (OpenCV) para RGB (Pillow) para manipular o texto corretamente
+    # Converte de BGR (OpenCV) para RGB (Pillow)
     base_pil = Image.fromarray(cv2.cvtColor(base_bgr, cv2.COLOR_BGR2RGB)).convert("RGBA")
 
     if anim_type == "Estático" or not text or not text.strip():
@@ -3310,11 +3678,7 @@ def _build_video_from_slides_enhanced(
         off_y = adj.get("offset_y", 0.0)
 
         # Aplica ajustes e redimensionamento
-        slide_img = _apply_image_adjustment(
-            pil_img, target_width, target_height,
-            mode=mode, zoom=zoom, offset_x=off_x, offset_y=off_y
-        )
-
+        # Determina o fundo
         bg = None
         if background_config:
             if background_config["type"] == "Cor sólida":
@@ -3322,10 +3686,11 @@ def _build_video_from_slides_enhanced(
             elif background_config["type"] == "Imagem" and background_config.get("image"):
                 bg = background_config["image"]
 
+        # Aplica ajustes e redimensionamento (com fundo, se houver)
         slide_img = _apply_image_adjustment(
             pil_img, target_width, target_height,
             mode=mode, zoom=zoom, offset_x=off_x, offset_y=off_y,
-            background=bg   # <-- passa o fundo
+            background=bg
         )
         # Aplica moldura global, se configurada
         if frame_config and frame_config.get("tipo") != "Nenhuma":
@@ -3336,6 +3701,34 @@ def _build_video_from_slides_enhanced(
         n_frames = max(1, int(dur_s * fps))
         text_layer = _render_text_layer(text or "", target_width, target_height, tcfg)
 
+        # ── Helper interno: calcula interval_progress corretamente ──────────────
+        def _calc_interval_progress(t_g: float) -> Optional[float]:
+            """
+            Retorna progresso 0..1 dentro do intervalo de legenda, ou None se fora.
+            CORREÇÃO: quando não há intervalo configurado (end==start==0), usa o
+            progresso relativo ao slide atual para que a animação SEMPRE funcione.
+            """
+            if legenda_interval_end > legenda_interval_start:
+                if legenda_interval_start <= t_g <= legenda_interval_end:
+                    span = legenda_interval_end - legenda_interval_start
+                    return max(0.0, min(1.0, (t_g - legenda_interval_start) / span))
+                return None
+            # Sem intervalo definido: anima durante todo o slide atual
+            slide_start_t = global_time
+            slide_end_t   = global_time + dur_s
+            if slide_start_t <= t_g <= slide_end_t:
+                span = max(dur_s, 0.001)
+                return max(0.0, min(1.0, (t_g - slide_start_t) / span))
+            return None
+
+        # ── Helper: resolve tipo de animação com fallback para default ───────
+        def _resolve_anim(t_g: float) -> str:
+            atype = _get_animation_type_at_time(animation_segments, t_g)
+            # Se retornou Estático E há um default diferente, usa o default
+            if atype == "Estático" and default_anim_type and default_anim_type != "Estático":
+                return default_anim_type
+            return atype
+
         # Transição dissolve
         if si > 0 and transition_frames > 0:
             for tf in range(transition_frames):
@@ -3343,20 +3736,13 @@ def _build_video_from_slides_enhanced(
                 blended_base = cv2.addWeighted(
                     np.zeros_like(base_bgr), 1 - alpha, base_bgr, alpha, 0
                 )
-                t_global = global_time + (tf / fps)
-                anim_type = _get_animation_type_at_time(animation_segments, t_global)
-                if anim_type == "Estático" and not animation_segments:
-                    anim_type = default_anim_type
-
-                if (legenda_interval_end > legenda_interval_start and
-                    legenda_interval_start <= t_global <= legenda_interval_end):
-                    interval_progress = (t_global - legenda_interval_start) / (legenda_interval_end - legenda_interval_start)
-                else:
-                    interval_progress = None
+                t_global_tf = global_time + (tf / fps)
+                anim_type_tf = _resolve_anim(t_global_tf)
+                ip = _calc_interval_progress(t_global_tf)
 
                 final_frame = _apply_text_animation(
-                    blended_base, text_layer, anim_type, tf, n_frames, fps, text or "", tcfg,
-                    interval_progress=interval_progress,
+                    blended_base, text_layer, anim_type_tf, tf, n_frames, fps,
+                    text or "", tcfg, interval_progress=ip,
                 )
                 fname = os.path.join(tmp_dir, f"frame_{frame_idx:06d}.jpg")
                 cv2.imwrite(fname, final_frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
@@ -3366,19 +3752,12 @@ def _build_video_from_slides_enhanced(
         # Frames principais do slide
         for fi in range(n_frames):
             t_global = global_time + (fi / fps)
-            anim_type = _get_animation_type_at_time(animation_segments, t_global)
-            if anim_type == "Estático" and not animation_segments:
-                anim_type = default_anim_type
-
-            if (legenda_interval_end > legenda_interval_start and
-                legenda_interval_start <= t_global <= legenda_interval_end):
-                interval_progress = (t_global - legenda_interval_start) / (legenda_interval_end - legenda_interval_start)
-            else:
-                interval_progress = None
+            anim_type_fi = _resolve_anim(t_global)
+            ip = _calc_interval_progress(t_global)
 
             final_frame = _apply_text_animation(
-                base_bgr, text_layer, anim_type, fi, n_frames, fps, text or "", tcfg,
-                interval_progress=interval_progress,
+                base_bgr, text_layer, anim_type_fi, fi, n_frames, fps,
+                text or "", tcfg, interval_progress=ip,
             )
             fname = os.path.join(tmp_dir, f"frame_{frame_idx:06d}.jpg")
             cv2.imwrite(fname, final_frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
@@ -4215,13 +4594,29 @@ def tab_montagem():
                 help="0 = corte seco. 8-12 = dissolve suave."
             )
         with col_v2:
-            resolucao = st.selectbox(
-                "Resolução de saída:",
-                ["1280x720 (HD)", "1920x1080 (Full HD)", "854x480 (SD)", "640x360 (Baixa)"],
+            formato = st.selectbox(
+                "🎯 Formato de saída:",
+                ["YouTube (16:9)", "TikTok/Reels (9:16)", "Story (9:16)", "Quadrado (1:1)", "Personalizado"],
                 index=0,
-                key="video_resolution",
-                help="A resolução final do vídeo. As imagens serão redimensionadas para este tamanho."
+                key="output_format",
+                help="Escolha o formato do vídeo. A resolução será ajustada automaticamente."
             )
+            # Determina largura e altura com base no formato escolhido
+            if formato == "YouTube (16:9)":
+                vid_width, vid_height = 1280, 720
+            elif formato == "TikTok/Reels (9:16)":
+                vid_width, vid_height = 1080, 1920
+            elif formato == "Story (9:16)":
+                vid_width, vid_height = 1080, 1920
+            elif formato == "Quadrado (1:1)":
+                vid_width, vid_height = 1080, 1080
+            else:  # Personalizado
+                col_w, col_h = st.columns(2)
+                with col_w:
+                    vid_width = st.number_input("Largura:", 480, 3840, 1280, step=10, key="custom_w")
+                with col_h:
+                    vid_height = st.number_input("Altura:", 480, 3840, 720, step=10, key="custom_h")
+
             qualidade = st.select_slider(
                 "Qualidade do vídeo:",
                 options=["Baixa", "Média", "Alta", "Máxima"],
@@ -4229,14 +4624,6 @@ def tab_montagem():
                 key="video_quality",
                 help="Afeta o bitrate e a compressão. Máxima = arquivo maior, melhor qualidade."
             )
-
-        res_map = {
-            "1280x720 (HD)": (1280, 720),
-            "1920x1080 (Full HD)": (1920, 1080),
-            "854x480 (SD)": (854, 480),
-            "640x360 (Baixa)": (640, 360),
-        }
-        vid_width, vid_height = res_map[resolucao]
 
         qual_map = {
             "Baixa": {"crf": 28, "preset": "fast"},
@@ -4248,7 +4635,7 @@ def tab_montagem():
         vid_preset = qual_map[qualidade]["preset"]
 
         st.caption(f"🎞️ Resolução: {vid_width}x{vid_height} | Qualidade: {qualidade} (CRF {vid_crf})")
-
+        
         # ---------------------------------------------------------------------
         # PASSO 8: MOLDURA PARA IMAGENS (com estado persistente)
         # ---------------------------------------------------------------------
