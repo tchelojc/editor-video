@@ -712,23 +712,41 @@ def apply_frame(image: Image.Image, cfg: Dict) -> Image.Image:
 def apply_text(image: Image.Image, cfg: Dict) -> Image.Image:
     texto = cfg.get("texto","")
     if not texto: return image
+
     img = image.copy().convert("RGBA")
     draw = ImageDraw.Draw(img)
+
     try:
         font = ImageFont.load_default()
     except:
         font = None
+
     cor = cfg.get("fonte",{}).get("cor","#FFFFFF")
     pos = cfg.get("posicao",{})
+
     try:
         bbox = draw.textbbox((0,0), texto, font=font)
         tw, th_ = bbox[2]-bbox[0], bbox[3]-bbox[1]
     except:
         tw, th_ = len(texto)*8, 16
+
     hmap = {"Esquerda":20,"Centro":(img.width-tw)//2,"Direita":img.width-tw-20}
-    vmap = {"Topo":20,"Meio":(img.height-th_)//2,"Base":img.height-th_-20}
+
+    # --- MAPA VERTICAL EXPANDIDO (NOVO) ---
+    vmap = {
+        "Topo": 20,
+        "Entre Meio e Topo": (img.height // 4) - (th_ // 2),
+        "Entre Centro e Topo": (img.height // 4) - (th_ // 2),  # adicionar
+        "Meio": (img.height - th_) // 2,
+        "Centro": (img.height - th_) // 2,
+        "Entre Meio e Base": (img.height * 3 // 4) - (th_ // 2),
+        "Entre Centro e Base": (img.height * 3 // 4) - (th_ // 2),  # adicionar
+        "Base": img.height - th_ - 20
+    }
+
     x = hmap.get(pos.get("horizontal","Centro"), (img.width-tw)//2)
     y = vmap.get(pos.get("vertical","Base"), img.height-th_-20)
+
     ctr = cfg.get("contorno",{})
     if ctr.get("ativo"):
         cw = ctr.get("espessura",2)
@@ -737,9 +755,9 @@ def apply_text(image: Image.Image, cfg: Dict) -> Image.Image:
             for dy in range(-cw, cw+1):
                 if dx or dy:
                     draw.text((x+dx,y+dy), texto, fill=cc, font=font)
+
     draw.text((x,y), texto, fill=cor, font=font)
     return img
-
 # --- DENTRO DA ABA EDITOR DE VÍDEO (Exemplo de Implementação da Lógica) ---
 
 def ajustar_timing_proporcional(segmentos_duracao, index_alvo, nova_duracao_alvo, duracao_total):
@@ -2102,7 +2120,16 @@ def tab_filtros():
                         "horizontal": st.selectbox("Horizontal:",
                             ["Esquerda","Centro","Direita"], index=1, key="pos_h"),
                         "vertical": st.selectbox("Vertical:",
-                            ["Topo","Meio","Base"], index=2, key="pos_v"),
+                            [
+                                "Topo",
+                                "Entre Meio e Topo",
+                                "Entre Centro e Topo",
+                                "Meio",
+                                "Centro",
+                                "Entre Meio e Base",
+                                "Entre Centro e Base",
+                                "Base"
+                            ], index=7, key="pos_v"),
                     }
                     cfg["contorno"] = {
                         "ativo": st.checkbox("Contorno", value=True, key="ctr_on"),
@@ -2343,7 +2370,17 @@ def tab_screenshot():
             annot    = st.text_input("📝 Anotação:", placeholder="Adicione texto...", key="ss_annot")
             acor     = st.color_picker("Cor da anotação:", "#FF2244", key="ss_acor")
             apos_h   = st.selectbox("Posição H:", ["Esquerda","Centro","Direita"], index=1, key="ss_ah")
-            apos_v   = st.selectbox("Posição V:", ["Topo","Meio","Base"], index=2, key="ss_av")
+            apos_v = st.selectbox("Posição V:", 
+                [
+                    "Topo",
+                    "Entre Meio e Topo",
+                    "Entre Centro e Topo",
+                    "Meio",
+                    "Centro",
+                    "Entre Meio e Base",
+                    "Entre Centro e Base",
+                    "Base"
+                ], index=7, key="ss_av")
 
         with col_pv:
             edited = img.copy()
@@ -3167,8 +3204,8 @@ def _render_text_on_image(
     text: str,
     font_size: int,
     font_color: str,
-    font_name: str,          # nome amigável da fonte
-    font_path: str,          # caminho real do arquivo .ttf/.otf
+    font_name: str,
+    font_path: str,
     h_align: str,
     v_align: str,
     shadow: bool,
@@ -3192,10 +3229,6 @@ def _render_text_on_image(
     font = None
     if font_path and os.path.exists(font_path):
         try:
-            # Tenta aplicar variações de estilo (se a fonte suportar)
-            # Muitas fontes têm arquivos separados para bold/italic. Vamos usar o mesmo arquivo
-            # e simular negrito/itálico com transformações do PIL? Infelizmente não é trivial.
-            # Para simplificar, usamos a fonte base e confiamos que o usuário escolha uma fonte que já tenha o estilo desejado.
             font = ImageFont.truetype(font_path, font_size)
         except Exception:
             font = ImageFont.load_default()
@@ -3225,13 +3258,18 @@ def _render_text_on_image(
     line_h = font_size + int(font_size * 0.3)
     total_h = len(lines) * line_h
 
-    # Vertical position
+    # --- BLOCO DE POSICIONAMENTO VERTICAL EXPANDIDO (NOVO) ---
     if v_align == "Topo":
         y_start = margin_px
-    elif v_align == "Centro":
+    elif v_align in ["Entre Meio e Topo", "Entre Centro e Topo"]:
+        y_start = max(margin_px, (H // 4) - (total_h // 2))
+    elif v_align in ["Centro", "Meio"]:
         y_start = (H - total_h) // 2
-    else:  # Base
+    elif v_align in ["Entre Meio e Base", "Entre Centro e Base"]:
+        y_start = min(H - total_h - margin_px, (H * 3 // 4) - (total_h // 2))
+    else:  # Base (padrão)
         y_start = H - total_h - margin_px
+    # ---------------------------------------------------------
 
     # Background box
     if bg_box and lines:
@@ -3275,12 +3313,10 @@ def _render_text_on_image(
         else:
             x = margin_px
 
-        # Simular negrito (opcional: usar ImageFont com variação bold se disponível)
+        # Simular negrito
         if bold:
-            # Desenha o texto deslocado para simular negrito (imperfeito, mas funcional)
             for dx, dy in [(-1,0), (1,0), (0,-1), (0,1)]:
                 draw.text((x+dx, y+dy), line, font=font, fill=fc)
-        # Simular itálico (inclinação) – não implementado aqui por simplicidade
 
         # Shadow
         if shadow:
@@ -3294,7 +3330,7 @@ def _render_text_on_image(
                     if dx != 0 or dy != 0:
                         draw.text((x + dx, y + dy), line, font=font, fill=oc)
 
-        # Main text (se bold já foi desenhado, pode pular para evitar duplicidade)
+        # Main text
         if not bold:
             draw.text((x, y), line, font=font, fill=fc)
         y += line_h
@@ -3305,12 +3341,22 @@ def _render_text_layer(text: str, W: int, H: int, tcfg: dict) -> Image.Image:
     """
     Renderiza apenas a camada de texto (RGBA transparente) para composição animada.
     Suporta font_path, tamanho, cor, sombra, contorno, caixa de fundo.
+    Escala automaticamente o font_size e margin conforme o canvas (YouTube/TikTok/etc).
     """
     layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     if not text or not text.strip():
         return layer
 
-    font_size = tcfg.get("font_size", 48)
+    # --- ESCALA PROPORCIONAL DO FONT_SIZE AO CANVAS ---
+    # Referência base: canvas YouTube 1280x720 (largura=1280)
+    # Para TikTok 1080x1920: escala pela largura (menor dimensão do canvas)
+    BASE_REF_WIDTH = 1280
+    font_size_base = tcfg.get("font_size", 48)
+    # Escala pelo menor entre W e H para não explodir em telas muito altas
+    ref_dim = min(W, H * 1.778)  # normaliza pela proporção 16:9 equivalente
+    scale_factor = min(W, ref_dim) / BASE_REF_WIDTH
+    font_size = max(12, int(font_size_base * scale_factor))
+
     font_color = tcfg.get("font_color", "#FFFFFF")
     font_path = tcfg.get("font_path", "")
     h_align = tcfg.get("h_align", "Centro")
@@ -3323,6 +3369,7 @@ def _render_text_layer(text: str, W: int, H: int, tcfg: dict) -> Image.Image:
     bg_box = tcfg.get("bg_box", False)
     bg_box_color = tcfg.get("bg_box_color", "#000000")
     bg_box_alpha = tcfg.get("bg_box_alpha", 60)
+    # margin proporcional à largura, mínimo 20px
     margin_pct = 0.05
 
     # Carrega a fonte
@@ -3376,12 +3423,19 @@ def _render_text_layer(text: str, W: int, H: int, tcfg: dict) -> Image.Image:
     line_h = font_size + int(font_size * 0.3)
     total_h = len(lines) * line_h
 
+    # --- POSICIONAMENTO VERTICAL COMPLETO (pareia com _render_text_on_image) ---
     if v_align == "Topo":
         y_start = margin_px
-    elif v_align == "Centro":
+    elif v_align in ["Entre Meio e Topo", "Entre Centro e Topo"]:
+        y_start = max(margin_px, (H // 4) - (total_h // 2))
+    elif v_align in ["Centro", "Meio"]:
         y_start = (H - total_h) // 2
-    else:
+    elif v_align in ["Entre Meio e Base", "Entre Centro e Base"]:
+        y_start = min(H - total_h - margin_px, (H * 3 // 4) - (total_h // 2))
+    else:  # Base (padrão)
         y_start = H - total_h - margin_px
+    # Garante que y_start nunca saia do canvas
+    y_start = max(margin_px, min(y_start, H - total_h - margin_px))
 
     # Caixa de fundo
     if bg_box:
@@ -4479,7 +4533,17 @@ def tab_montagem():
                 font_italic = st.checkbox("Itálico (não implementado)", value=False, key="tf_italic", disabled=True)
             with tf_c3:
                 h_align = st.selectbox("Alinhamento horizontal:", ["Centro", "Esquerda", "Direita"], key="tf_halign")
-                v_align = st.selectbox("Posição vertical:", ["Base", "Centro", "Topo"], key="tf_valign")
+                v_align = st.selectbox("Posição vertical:", 
+                    [
+                        "Topo",
+                        "Entre Meio e Topo",
+                        "Entre Centro e Topo",
+                        "Meio",
+                        "Centro",
+                        "Entre Meio e Base",
+                        "Entre Centro e Base",
+                        "Base"
+                    ], index=7, key="tf_valign")
 
         with st.expander("🌑 Sombreamento & Contorno", expanded=True):
             sh_c1, sh_c2 = st.columns(2)
