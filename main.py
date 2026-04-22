@@ -455,6 +455,23 @@ def img_to_bytes(img: Image.Image, fmt="PNG", quality=93) -> bytes:
         img.save(buf, format=fmt)
     return buf.getvalue()
 
+def pil_to_stable_path(img: Image.Image, key: str = "") -> str:
+    """
+    Salva uma imagem PIL em disco (working_dir) com nome estável baseado no hash do conteúdo.
+    Retorna o caminho do arquivo — usar st.image(path) evita o erro MediaFileHandler.
+    """
+    import hashlib
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, format="JPEG", quality=88)
+    raw = buf.getvalue()
+    h = hashlib.md5(raw).hexdigest()[:12]
+    fname = f"_preview_{key}_{h}.jpg"
+    path = os.path.join(st.session_state.get("working_dir", tempfile.gettempdir()), fname)
+    if not os.path.exists(path):
+        with open(path, "wb") as f:
+            f.write(raw)
+    return path
+
 def apply_filters(image: Image.Image, cfg: Dict) -> Image.Image:
     """
     Aplica todos os filtros selecionados à imagem.
@@ -1192,10 +1209,10 @@ def render_sidebar():
             st.markdown(f'<div class="badge">🎬 Vídeo: {st.session_state.video_clip.duration:.1f}s</div>',
                         unsafe_allow_html=True)
             if st.session_state.video_frame:
-                st.image(st.session_state.video_frame,
+                st.image(pil_to_stable_path(st.session_state.video_frame, "vframe"),
                          caption="Frame atual", use_container_width=True)
         elif st.session_state.base_image:
-            st.image(st.session_state.base_image,
+            st.image(pil_to_stable_path(st.session_state.base_image, "base"),
                      caption="Imagem carregada", use_container_width=True)
         else:
             st.markdown('<div class="card cl">Nenhuma mídia carregada.</div>',
@@ -1400,7 +1417,7 @@ def tab_ajuda():
 
         #### 5. **Animações da legenda**
         - **Estático:** texto fixo durante todo o slide.
-        - **Rolagem (baixo → cima):** texto sobe continuamente, como créditos de filme.
+        - **Rolagem (baixo → cima):** cada bloco de legenda sobe individualmente de baixo da tela até a posição configurada, durante o intervalo do timestamp. Não é necessário configurar segmentos de timeline.
         - **Fade In:** texto aparece gradualmente.
         - **Fade Out:** texto desaparece gradualmente.
         - **Typewriter (letra a letra):** as letras vão surgindo uma a uma.
@@ -1809,7 +1826,7 @@ def tab_video():
     if st.session_state.video_frame:
         col_img1, col_img2, col_img3 = st.columns([1, 2, 1])
         with col_img2:
-            st.image(st.session_state.video_frame,
+            st.image(pil_to_stable_path(st.session_state.video_frame, "vf_tab"),
                      caption=f"Frame em {st.session_state._current_frame_sec:.1f}s — use na aba Filtros!",
                      use_container_width=False)
         st.markdown("<br>", unsafe_allow_html=True)
@@ -2025,6 +2042,477 @@ def tab_video():
             use_container_width=True,
             key="dl_mp4_final"
         )
+
+    # =========================================================================
+    # SEÇÃO: MONTAGEM ÂNCORA — JUNÇÃO DE MÚLTIPLOS VÍDEOS
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("### 🎬 MONTAGEM ÂNCORA — JUNÇÃO DE VÍDEOS")
+    st.markdown("""
+    <div class="card co" style="font-size:.88rem;margin-bottom:.8rem;">
+    🎯 <b>Como funciona:</b><br>
+    O <b>Vídeo Âncora</b> é a base da montagem (ex: abertura + tela preta de 1m30s).<br>
+    Os <b>Vídeos Secundários</b> são inseridos sobre a tela preta — você define o <b>frame de início</b> e o <b>frame de fim</b> da região a substituir.<br>
+    Cada vídeo secundário é <b>comprimido ou expandido proporcionalmente</b> para caber exatamente no intervalo definido.<br>
+    <span style="color:var(--c1);">💡 Use isso para montar séries, aulas, episódios — sempre com a mesma abertura.</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Inicializa estado da montagem âncora
+    if "ancora_slots" not in st.session_state:
+        st.session_state.ancora_slots = []    # lista de dicts: {file, bytes, name, start, end}
+    if "ancora_result" not in st.session_state:
+        st.session_state.ancora_result = None
+
+    # ── Upload do vídeo âncora ────────────────────────────────────────────────
+    st.markdown("#### 🔗 Vídeo Âncora (base)")
+    st.caption("Este é o vídeo de referência — a abertura e a estrutura principal que permanece sempre igual.")
+
+    col_anc1, col_anc2 = st.columns([2, 1])
+    with col_anc1:
+        ancora_upload = st.file_uploader(
+            "Carregar Vídeo Âncora:",
+            type=["mp4", "mov", "avi", "mkv", "webm"],
+            key="ancora_upload_file",
+            help="Vídeo base que contém a abertura + espaços em branco (tela preta) para preenchimento."
+        )
+    with col_anc2:
+        if ancora_upload:
+            st.success(f"✅ Âncora: **{ancora_upload.name}**")
+            if "ancora_saved_path" not in st.session_state or \
+               st.session_state.get("ancora_saved_name") != ancora_upload.name:
+                ancora_path = os.path.join(st.session_state.working_dir, f"ancora_{ancora_upload.name}")
+                with open(ancora_path, "wb") as f:
+                    f.write(ancora_upload.read())
+                st.session_state.ancora_saved_path = ancora_path
+                st.session_state.ancora_saved_name = ancora_upload.name
+                # Detecta duração
+                try:
+                    import imageio_ffmpeg
+                    ffprobe = imageio_ffmpeg.get_ffmpeg_exe().replace("ffmpeg", "ffprobe")
+                    if not os.path.exists(ffprobe):
+                        ffprobe = "ffprobe"
+                    result = subprocess.run(
+                        [ffprobe, "-v", "error", "-show_entries", "format=duration",
+                         "-of", "default=noprint_wrappers=1:nokey=1", ancora_path],
+                        capture_output=True, text=True, timeout=15
+                    )
+                    ancora_dur = float(result.stdout.strip()) if result.stdout.strip() else 0.0
+                    st.session_state.ancora_duration = ancora_dur
+                except Exception:
+                    st.session_state.ancora_duration = 0.0
+
+    # Exibe duração e preview do âncora
+    if "ancora_saved_path" in st.session_state and os.path.exists(st.session_state.ancora_saved_path):
+        ancora_dur = st.session_state.get("ancora_duration", 0.0)
+        st.caption(f"⏱️ Duração do âncora: **{ancora_dur:.2f}s** ({int(ancora_dur//60)}m{int(ancora_dur%60):02d}s)")
+
+        col_prev_a1, col_prev_a2, col_prev_a3 = st.columns([1, 2, 1])
+        with col_prev_a2:
+            with open(st.session_state.ancora_saved_path, "rb") as vf:
+                st.video(vf.read())
+
+        # ── Upload dos vídeos secundários ────────────────────────────────────
+        st.markdown("---")
+        st.markdown("#### 📂 Vídeos Secundários")
+        st.caption("Carregue os vídeos que serão inseridos no âncora. Cada um pode ter um intervalo de substituição diferente.")
+
+        sec_uploads = st.file_uploader(
+            "Carregar Vídeos Secundários (múltiplos):",
+            type=["mp4", "mov", "avi", "mkv", "webm"],
+            accept_multiple_files=True,
+            key="ancora_secondary_uploads",
+            help="Selecione um ou mais vídeos. A ordem de upload define a ordem padrão de inserção."
+        )
+
+        if sec_uploads:
+            # Salva arquivos recém carregados
+            for uf in sec_uploads:
+                already = any(s["name"] == uf.name for s in st.session_state.ancora_slots)
+                if not already:
+                    save_path = os.path.join(st.session_state.working_dir, f"sec_{uuid.uuid4().hex[:6]}_{uf.name}")
+                    file_bytes = uf.read()
+                    with open(save_path, "wb") as f:
+                        f.write(file_bytes)
+                    # Detecta duração do secundário
+                    try:
+                        import imageio_ffmpeg
+                        ffprobe = imageio_ffmpeg.get_ffmpeg_exe().replace("ffmpeg", "ffprobe")
+                        if not os.path.exists(ffprobe):
+                            ffprobe = "ffprobe"
+                        res = subprocess.run(
+                            [ffprobe, "-v", "error", "-show_entries", "format=duration",
+                             "-of", "default=noprint_wrappers=1:nokey=1", save_path],
+                            capture_output=True, text=True, timeout=15
+                        )
+                        sec_dur = float(res.stdout.strip()) if res.stdout.strip() else 0.0
+                    except Exception:
+                        sec_dur = 0.0
+                    st.session_state.ancora_slots.append({
+                        "name": uf.name,
+                        "path": save_path,
+                        "original_dur": sec_dur,
+                        "start": 15.0,   # padrão: começa onde a abertura termina
+                        "end": min(ancora_dur, 15.0 + sec_dur),
+                    })
+
+        # ── Editor dos slots ─────────────────────────────────────────────────
+        if st.session_state.ancora_slots:
+            st.markdown("---")
+            st.markdown("#### ✂️ Configure os Intervalos de Inserção")
+            st.markdown("""
+            <div class="card cl" style="font-size:.83rem;margin-bottom:.6rem;">
+            🎯 Defina onde (em segundos no âncora) cada vídeo secundário deve ser inserido.<br>
+            O sistema vai <b>comprimir ou esticar</b> o secundário automaticamente para caber no intervalo.<br>
+            <b>Frame Início</b> = segundo do âncora onde o secundário começa.<br>
+            <b>Frame Fim</b> = segundo do âncora onde o secundário termina.
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Visualização da timeline de montagem
+            tl_html = f'<div style="font-size:.75rem;color:var(--dim);margin-bottom:.3rem;">Timeline do Âncora ({ancora_dur:.1f}s):</div>'
+            tl_html += '<div class="timeline-bar" style="height:44px;position:relative;">'
+            SLOT_COLORS = ["#ff4d6d", "#a8ff3e", "#ffd166", "#9b5de5", "#f15bb5",
+                           "#fee440", "#00bbf9", "#00f5d4", "#e9c46a", "#f4a261"]
+            # Barra âncora (base cinza)
+            tl_html += '<div style="position:absolute;left:0;top:0;width:100%;height:100%;background:#1e2a3a;border-radius:8px;"></div>'
+            for si, slot in enumerate(st.session_state.ancora_slots):
+                left_pct = (slot["start"] / max(ancora_dur, 0.01)) * 100
+                width_pct = ((slot["end"] - slot["start"]) / max(ancora_dur, 0.01)) * 100
+                color = SLOT_COLORS[si % len(SLOT_COLORS)]
+                short_name = slot["name"][:10] + "…" if len(slot["name"]) > 12 else slot["name"]
+                s_s = slot["start"]
+                s_e = slot["end"]
+                tl_html += (
+                    f'<div class="timeline-segment" style="position:absolute;left:{left_pct:.1f}%;'
+                    f'width:{max(width_pct,1):.1f}%;background:{color};height:100%;font-size:.6rem;" '
+                    f'title="V{si+1}: {s_s:.1f}s \u2192 {s_e:.1f}s">'
+                    f'V{si+1}<br>{short_name}</div>'
+                )
+            tl_html += '</div>'
+            st.markdown(tl_html, unsafe_allow_html=True)
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # Editor individual por slot
+            slots_to_remove = []
+            for si, slot in enumerate(st.session_state.ancora_slots):
+                color = SLOT_COLORS[si % len(SLOT_COLORS)]
+                with st.expander(
+                    f"🎬 Vídeo {si+1}: {slot['name']} (original: {slot['original_dur']:.1f}s)",
+                    expanded=(si == 0)
+                ):
+                    col_s1, col_s2, col_s3, col_s4 = st.columns([2, 2, 1, 1])
+                    with col_s1:
+                        new_start = st.number_input(
+                            "▶ Frame Início (s):",
+                            min_value=0.0,
+                            max_value=float(ancora_dur) - 0.1,
+                            value=float(slot["start"]),
+                            step=0.5,
+                            key=f"slot_start_{si}",
+                            help="Segundo do âncora onde este vídeo começa a substituir."
+                        )
+                    with col_s2:
+                        new_end = st.number_input(
+                            "⏹ Frame Fim (s):",
+                            min_value=new_start + 0.1,
+                            max_value=float(ancora_dur),
+                            value=float(max(slot["end"], new_start + 0.5)),
+                            step=0.5,
+                            key=f"slot_end_{si}",
+                            help="Segundo do âncora onde este vídeo termina. O secundário será esticado/comprimido para caber."
+                        )
+                    with col_s3:
+                        interval = new_end - new_start
+                        factor = slot["original_dur"] / max(interval, 0.01)
+                        if abs(factor - 1.0) < 0.05:
+                            fator_label = "✅ 1:1"
+                            fator_color = "#a8ff3e"
+                        elif factor > 1.0:
+                            fator_label = f"⚡ {factor:.2f}x"
+                            fator_color = "#ffd166"
+                        else:
+                            fator_label = f"🐢 {factor:.2f}x"
+                            fator_color = "#00e5ff"
+                        st.markdown(
+                            f'<div style="padding-top:24px;text-align:center;'
+                            f'color:{fator_color};font-weight:700;font-size:1.1rem;">'
+                            f'{fator_label}</div>',
+                            unsafe_allow_html=True
+                        )
+                        st.caption("velocidade")
+                    with col_s4:
+                        st.markdown("<div style='padding-top:22px;'></div>", unsafe_allow_html=True)
+                        if st.button("🗑️", key=f"slot_del_{si}", help="Remover este vídeo da montagem"):
+                            slots_to_remove.append(si)
+
+                    # Atualiza valores no slot
+                    st.session_state.ancora_slots[si]["start"] = new_start
+                    st.session_state.ancora_slots[si]["end"] = new_end
+
+                    # Aviso de sobreposição com outros slots
+                    for sj, other in enumerate(st.session_state.ancora_slots):
+                        if sj != si:
+                            if not (new_end <= other["start"] or new_start >= other["end"]):
+                                st.warning(f"⚠️ Sobreposição com Vídeo {sj+1} ({other['start']:.1f}s→{other['end']:.1f}s)")
+                                break
+
+            # Remove slots marcados
+            if slots_to_remove:
+                for idx in sorted(slots_to_remove, reverse=True):
+                    st.session_state.ancora_slots.pop(idx)
+                st.rerun()
+
+            if st.button("🗑️ Limpar todos os vídeos secundários", key="ancora_clear_all"):
+                st.session_state.ancora_slots = []
+                st.session_state.ancora_result = None
+                st.rerun()
+
+            # ── Botão de geração ─────────────────────────────────────────────
+            st.markdown("---")
+            col_gen1, col_gen2 = st.columns([2, 1])
+            with col_gen1:
+                audio_ancora = st.checkbox(
+                    "🔊 Manter áudio do Âncora na região substituída",
+                    value=False,
+                    key="ancora_keep_audio",
+                    help="Se marcado, o áudio original do âncora continua mesmo onde o vídeo secundário é inserido. Se desmarcado, usa o áudio do vídeo secundário."
+                )
+            with col_gen2:
+                ancora_quality = st.selectbox(
+                    "Qualidade:", ["Alta (CRF 18)", "Média (CRF 23)", "Rápida (CRF 28)"],
+                    key="ancora_quality"
+                )
+                crf_map = {"Alta (CRF 18)": "18", "Média (CRF 23)": "23", "Rápida (CRF 28)": "28"}
+                ancora_crf = crf_map[ancora_quality]
+
+            if st.button("🚀 GERAR MONTAGEM ÂNCORA", type="primary",
+                         key="ancora_generate_btn",
+                         use_container_width=True,
+                         help="Processa a montagem completa: âncora + todos os vídeos secundários inseridos nos intervalos definidos."):
+
+                ancora_path = st.session_state.ancora_saved_path
+                slots = st.session_state.ancora_slots
+
+                if not slots:
+                    st.error("❌ Adicione ao menos um vídeo secundário antes de gerar.")
+                elif not os.path.exists(ancora_path):
+                    st.error("❌ Arquivo âncora não encontrado. Faça o upload novamente.")
+                else:
+                    out_final = os.path.join(
+                        st.session_state.working_dir,
+                        f"{st.session_state.project_name}_montagem_ancora.mp4"
+                    )
+
+                    prog = st.progress(0, text="🔧 Iniciando montagem...")
+                    tmp_merge = tempfile.mkdtemp()
+
+                    try:
+                        # Ordena slots por tempo de início
+                        sorted_slots = sorted(slots, key=lambda x: x["start"])
+
+                        # Constrói lista de segmentos da linha do tempo total
+                        # Cada segmento é: (source_path, t_in_anchor_start, t_in_anchor_end, velocidade, usar_audio_ancora)
+                        # Vamos construir: trechos do âncora puro + trechos substituídos
+
+                        segments_timeline = []  # (path, ss, to, speed, is_anchor)
+                        cursor = 0.0
+
+                        for slot_idx, slot in enumerate(sorted_slots):
+                            s_start = slot["start"]
+                            s_end   = slot["end"]
+                            interval = s_end - s_start
+
+                            # 1. Trecho do âncora antes deste slot (se houver gap)
+                            if cursor < s_start:
+                                segments_timeline.append({
+                                    "path": ancora_path,
+                                    "ss": cursor,
+                                    "to": s_start,
+                                    "speed": 1.0,
+                                    "is_anchor": True,
+                                    "label": f"âncora {cursor:.1f}s→{s_start:.1f}s"
+                                })
+                            cursor = s_end
+
+                            # 2. Trecho do secundário (esticado/comprimido)
+                            sec_dur = slot["original_dur"]
+                            speed = sec_dur / max(interval, 0.01)
+                            segments_timeline.append({
+                                "path": slot["path"],
+                                "ss": 0.0,
+                                "to": sec_dur,
+                                "speed": speed,
+                                "is_anchor": False,
+                                "audio_ancora": audio_ancora,
+                                "ancora_path": ancora_path,
+                                "ancora_ss": s_start,
+                                "ancora_to": s_end,
+                                "label": f"sec '{slot['name']}' → {s_start:.1f}s→{s_end:.1f}s (×{speed:.2f})"
+                            })
+
+                        # 3. Trecho final do âncora após o último slot
+                        if cursor < ancora_dur:
+                            segments_timeline.append({
+                                "path": ancora_path,
+                                "ss": cursor,
+                                "to": ancora_dur,
+                                "speed": 1.0,
+                                "is_anchor": True,
+                                "label": f"âncora {cursor:.1f}s→{ancora_dur:.1f}s (final)"
+                            })
+
+                        prog.progress(10, text=f"📋 {len(segments_timeline)} segmentos planejados...")
+
+                        # Processa cada segmento com FFmpeg
+                        # Processa cada segmento com FFmpeg (CORRIGIDO)
+                        processed_segs = []
+                        for si_tl, seg in enumerate(segments_timeline):
+                            pct = int(10 + (si_tl / len(segments_timeline)) * 70)
+                            prog.progress(pct, text=f"⚙️ Processando: {seg['label']}...")
+
+                            seg_out = os.path.join(tmp_merge, f"seg_{si_tl:03d}.mp4")
+                            duration_input = seg["to"] - seg["ss"]
+                            speed = seg.get("speed", 1.0)
+                            # Duração final do segmento (já com velocidade aplicada)
+                            duration_output = duration_input / speed
+
+                            if seg["is_anchor"]:
+                                # Trecho do vídeo âncora (sem alteração de velocidade)
+                                cmd = [
+                                    "ffmpeg", "-y",
+                                    "-ss", str(seg["ss"]),
+                                    "-t", str(duration_input),
+                                    "-i", seg["path"],
+                                    "-vf", "setpts=PTS-STARTPTS",
+                                    "-c:v", "libx264", "-preset", "fast", "-crf", ancora_crf,
+                                    "-pix_fmt", "yuv420p",
+                                    "-af", "asetpts=PTS-STARTPTS",
+                                    "-c:a", "aac", "-b:a", "192k",
+                                    "-t", str(duration_output),
+                                    "-avoid_negative_ts", "make_zero",
+                                    seg_out
+                                ]
+                            else:
+                                # Segmento do vídeo secundário (com velocidade)
+                                pts_factor = 1.0 / speed
+                                if seg.get("audio_ancora", False):
+                                    # Vídeo do secundário + áudio do âncora
+                                    dur_anc = seg["ancora_to"] - seg["ancora_ss"]
+                                    cmd = [
+                                        "ffmpeg", "-y",
+                                        "-ss", str(seg["ss"]),
+                                        "-t", str(duration_input),
+                                        "-i", seg["path"],
+                                        "-ss", str(seg["ancora_ss"]),
+                                        "-t", str(dur_anc),
+                                        "-i", seg["ancora_path"],
+                                        "-filter_complex",
+                                        f"[0:v]setpts={pts_factor:.6f}*(PTS-STARTPTS)[vout];"
+                                        f"[1:a]asetpts=PTS-STARTPTS[aout]",
+                                        "-map", "[vout]", "-map", "[aout]",
+                                        "-c:v", "libx264", "-preset", "fast", "-crf", ancora_crf,
+                                        "-pix_fmt", "yuv420p",
+                                        "-c:a", "aac", "-b:a", "192k",
+                                        "-t", str(duration_output),
+                                        "-avoid_negative_ts", "make_zero",
+                                        seg_out
+                                    ]
+                                else:
+                                    # Vídeo + áudio do secundário (com ajuste de velocidade)
+                                    atempo = speed
+                                    if atempo > 2.0:
+                                        atempo_filter = f"atempo=2.0,atempo={atempo/2:.4f}"
+                                    elif atempo < 0.5:
+                                        atempo_filter = f"atempo=0.5,atempo={atempo*2:.4f}"
+                                    else:
+                                        atempo_filter = f"atempo={atempo:.4f}"
+                                    cmd = [
+                                        "ffmpeg", "-y",
+                                        "-ss", str(seg["ss"]),
+                                        "-t", str(duration_input),
+                                        "-i", seg["path"],
+                                        "-filter_complex",
+                                        f"[0:v]setpts={pts_factor:.6f}*(PTS-STARTPTS)[vout];"
+                                        f"[0:a]{atempo_filter},asetpts=PTS-STARTPTS[aout]",
+                                        "-map", "[vout]", "-map", "[aout]",
+                                        "-c:v", "libx264", "-preset", "fast", "-crf", ancora_crf,
+                                        "-pix_fmt", "yuv420p",
+                                        "-c:a", "aac", "-b:a", "192k",
+                                        "-t", str(duration_output),
+                                        "-avoid_negative_ts", "make_zero",
+                                        seg_out
+                                    ]
+
+                            result_seg = subprocess.run(cmd, capture_output=True, timeout=300)
+
+                            if os.path.exists(seg_out) and os.path.getsize(seg_out) > 500:
+                                processed_segs.append(seg_out)
+                            else:
+                                st.warning(f"⚠️ Segmento {si_tl+1} falhou. Stderr: {result_seg.stderr[-300:].decode('utf-8','ignore')}")
+                                
+                        prog.progress(85, text="🔗 Concatenando segmentos...")
+
+                        if not processed_segs:
+                            st.error("❌ Nenhum segmento processado com sucesso.")
+                        else:
+                            # Concatena todos os segmentos
+                            concat_list = os.path.join(tmp_merge, "concat_ancora.txt")
+                            with open(concat_list, "w") as f:
+                                for sp in processed_segs:
+                                    f.write(f"file '{sp}'\n")
+
+                            cmd_final = [
+                                "ffmpeg", "-y",
+                                "-f", "concat", "-safe", "0",
+                                "-i", concat_list,
+                                "-c:v", "libx264", "-preset", "fast", "-crf", ancora_crf,
+                                "-pix_fmt", "yuv420p",
+                                "-c:a", "aac", "-b:a", "192k",
+                                out_final
+                            ]
+                            res_final = subprocess.run(cmd_final, capture_output=True, timeout=600)
+                            prog.progress(98, text="✨ Finalizando...")
+
+                            if os.path.exists(out_final) and os.path.getsize(out_final) > 1000:
+                                with open(out_final, "rb") as vf:
+                                    result_bytes = vf.read()
+                                st.session_state.ancora_result = result_bytes
+                                st.session_state["_export_video"] = result_bytes
+                                prog.progress(100, text="✅ Montagem concluída!")
+                                st.success(f"🎉 Montagem âncora gerada! {len(processed_segs)} segmentos unidos.")
+                            else:
+                                st.error("❌ Falha na concatenação final.")
+                                if res_final.stderr:
+                                    st.code(res_final.stderr[-500:].decode("utf-8", "ignore"))
+
+                    except Exception as exc_ancora:
+                        st.error(f"❌ Erro na montagem: {exc_ancora}")
+                        st.code(traceback.format_exc(), language="python")
+                    finally:
+                        shutil.rmtree(tmp_merge, ignore_errors=True)
+
+            # Resultado da montagem âncora
+            if st.session_state.ancora_result:
+                st.markdown("---")
+                st.markdown('<div class="vbox">', unsafe_allow_html=True)
+                st.markdown('<div class="vbox-title">🎬 RESULTADO DA MONTAGEM ÂNCORA</div>', unsafe_allow_html=True)
+                col_res1, col_res2, col_res3 = st.columns([1, 2, 1])
+                with col_res2:
+                    st.video(st.session_state.ancora_result)
+                st.markdown('</div>', unsafe_allow_html=True)
+                st.download_button(
+                    "⬇️ BAIXAR MONTAGEM ÂNCORA (MP4)",
+                    st.session_state.ancora_result,
+                    f"{st.session_state.project_name}_montagem_ancora.mp4",
+                    "video/mp4",
+                    use_container_width=True,
+                    key="dl_ancora_final"
+                )
+
+    elif ancora_upload is None and "ancora_saved_path" not in st.session_state:
+        st.info("👆 Carregue o Vídeo Âncora acima para começar a montagem.")
+
                 
 def tab_filtros():
     st.markdown('<div class="stitle">🎨 FILTROS & MOLDURAS & TEXTO</div>', unsafe_allow_html=True)
@@ -2159,9 +2647,9 @@ def tab_filtros():
 
         col_ba, col_dp = st.columns(2)
         with col_ba:
-            st.image(source, caption="📷 Original", use_container_width=True)
+            st.image(pil_to_stable_path(source, "orig"), caption="📷 Original", use_container_width=True)
         with col_dp:
-            st.image(processed, caption="✨ Com Efeitos", use_container_width=True)
+            st.image(pil_to_stable_path(processed, "proc"), caption="✨ Com Efeitos", use_container_width=True)
 
         st.markdown("---")
         st.markdown("**📥 EXPORTAR IMAGEM:**")
@@ -2243,7 +2731,7 @@ def tab_animacoes():
                     y = random.randint(0,test_frame.height-1)
                     arr[y,:] = np.roll(arr[y,:], random.randint(-15,15), axis=0)
                 test_frame = Image.fromarray(arr)
-            st.image(test_frame.convert("RGB"), caption="Preview frame do meio", use_container_width=True)
+            st.image(pil_to_stable_path(test_frame.convert("RGB"), "anim_prev"), caption="Preview frame do meio", use_container_width=True)
 
         if gen_btn:
             if not sels:
@@ -2276,7 +2764,7 @@ def tab_animacoes():
                 key="dl_gif_final"
             )
         else:
-            st.image(base, caption="Imagem base — aguardando geração do GIF",
+            st.image(pil_to_stable_path(base, "anim_base"), caption="Imagem base — aguardando geração do GIF",
                      use_container_width=True)
             st.markdown("""
             <div class="card cg">
@@ -2305,9 +2793,7 @@ def tab_screenshot():
             st.session_state.screenshot_data = img
             st.session_state.base_image = img
             st.success("✅ Screenshot carregado! Disponível em Filtros & Animações.")
-            st.image(img, use_container_width=True)
-
-    elif modo == "🌐 URL via API":
+            st.image(pil_to_stable_path(img, "ss_upload"), use_container_width=True)
         st.markdown("""
         <div class="card cl">
         Use a API do <b>ScreenshotMachine</b> ou similar.
@@ -2333,9 +2819,7 @@ def tab_screenshot():
                             st.session_state.screenshot_data = img
                             st.session_state.base_image = img
                             st.success("✅ Screenshot capturado!")
-                            st.image(img, use_container_width=True)
-                        else:
-                            st.error("API retornou erro. Verifique a chave.")
+                            st.image(pil_to_stable_path(img, "ss_url"), use_container_width=True)
                     except Exception as e:
                         st.error(f"Erro: {e}")
             elif not api_key:
@@ -2397,7 +2881,7 @@ def tab_screenshot():
                     "posicao": {"horizontal":apos_h,"vertical":apos_v},
                     "contorno": {"ativo":True,"cor":"#000000","espessura":2},
                 })
-            st.image(edited, caption="Screenshot editado", use_container_width=True)
+            st.image(pil_to_stable_path(edited, "ss_edit"), caption="Screenshot editado", use_container_width=True)
 
             col_dl1, col_dl2 = st.columns(2)
             with col_dl1:
@@ -3340,20 +3824,15 @@ def _render_text_on_image(
 def _render_text_layer(text: str, W: int, H: int, tcfg: dict) -> Image.Image:
     """
     Renderiza apenas a camada de texto (RGBA transparente) para composição animada.
-    Suporta font_path, tamanho, cor, sombra, contorno, caixa de fundo.
-    Escala automaticamente o font_size e margin conforme o canvas (YouTube/TikTok/etc).
     """
     layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     if not text or not text.strip():
         return layer
 
     # --- ESCALA PROPORCIONAL DO FONT_SIZE AO CANVAS ---
-    # Referência base: canvas YouTube 1280x720 (largura=1280)
-    # Para TikTok 1080x1920: escala pela largura (menor dimensão do canvas)
     BASE_REF_WIDTH = 1280
     font_size_base = tcfg.get("font_size", 48)
-    # Escala pelo menor entre W e H para não explodir em telas muito altas
-    ref_dim = min(W, H * 1.778)  # normaliza pela proporção 16:9 equivalente
+    ref_dim = min(W, H * 1.778)
     scale_factor = min(W, ref_dim) / BASE_REF_WIDTH
     font_size = max(12, int(font_size_base * scale_factor))
 
@@ -3369,32 +3848,34 @@ def _render_text_layer(text: str, W: int, H: int, tcfg: dict) -> Image.Image:
     bg_box = tcfg.get("bg_box", False)
     bg_box_color = tcfg.get("bg_box_color", "#000000")
     bg_box_alpha = tcfg.get("bg_box_alpha", 60)
-    # margin proporcional à largura, mínimo 20px
     margin_pct = 0.05
 
-    # Carrega a fonte
+    # Carrega a fonte com fallback seguro
     font = None
     if font_path and os.path.exists(font_path):
         try:
             font = ImageFont.truetype(font_path, font_size)
         except Exception:
-            font = ImageFont.load_default()
-    else:
-        # Fallback para fontes comuns do sistema
+            pass
+
+    if font is None:
+        # Tenta fontes comuns do sistema
         fallback_fonts = [
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
             "C:\\Windows\\Fonts\\Arial.ttf",
-            "/System/Library/Fonts/Helvetica.ttc"
+            "/System/Library/Fonts/Helvetica.ttc",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
         ]
         for fb in fallback_fonts:
             if os.path.exists(fb):
                 try:
                     font = ImageFont.truetype(fb, font_size)
                     break
-                except:
+                except Exception:
                     pass
-        if font is None:
-            font = ImageFont.load_default()
+
+    if font is None:
+        font = ImageFont.load_default()
 
     draw = ImageDraw.Draw(layer)
     margin_px = int(W * margin_pct)
@@ -3423,7 +3904,7 @@ def _render_text_layer(text: str, W: int, H: int, tcfg: dict) -> Image.Image:
     line_h = font_size + int(font_size * 0.3)
     total_h = len(lines) * line_h
 
-    # --- POSICIONAMENTO VERTICAL COMPLETO (pareia com _render_text_on_image) ---
+    # Posicionamento vertical
     if v_align == "Topo":
         y_start = margin_px
     elif v_align in ["Entre Meio e Topo", "Entre Centro e Topo"]:
@@ -3432,9 +3913,8 @@ def _render_text_layer(text: str, W: int, H: int, tcfg: dict) -> Image.Image:
         y_start = (H - total_h) // 2
     elif v_align in ["Entre Meio e Base", "Entre Centro e Base"]:
         y_start = min(H - total_h - margin_px, (H * 3 // 4) - (total_h // 2))
-    else:  # Base (padrão)
+    else:  # Base
         y_start = H - total_h - margin_px
-    # Garante que y_start nunca saia do canvas
     y_start = max(margin_px, min(y_start, H - total_h - margin_px))
 
     # Caixa de fundo
@@ -3497,34 +3977,46 @@ def _apply_text_animation(
     text: str,
     tcfg: dict,
     interval_progress: float = None,
+    # Para legenda dinâmica com timestamps
+    block_local_t: float = None,   # tempo decorrido dentro do bloco atual (segundos)
+    block_duration: float = None,  # duração total do bloco atual (segundos)
 ) -> np.ndarray:
     W = base_bgr.shape[1]
     H = base_bgr.shape[0]
 
-    # Sem texto: retorna o frame base limpo (BGR)
+    # Se não houver texto, retorna o frame base
     if not text or not text.strip():
         return base_bgr.copy()
 
-    # CORREÇÃO DO BUG DE ANIMAÇÃO:
-    # Se interval_progress for None (fora do intervalo de legenda definido),
-    # assume t = 1.0 para que a animação seja renderizada em seu estado final
-    # (totalmente visível em fade, totalmente crescido em zoom, etc.)
     if interval_progress is None:
         t = 1.0
     else:
         t = interval_progress
 
-    # Converte de BGR (OpenCV) para RGB (Pillow)
+    # Converte de BGR (OpenCV) para RGBA (Pillow)
     base_pil = Image.fromarray(cv2.cvtColor(base_bgr, cv2.COLOR_BGR2RGB)).convert("RGBA")
 
-    if anim_type == "Estático" or not text or not text.strip():
+    if anim_type == "Estático":
         result = Image.alpha_composite(base_pil, text_layer)
         return cv2.cvtColor(np.array(result.convert("RGB")), cv2.COLOR_RGB2BGR)
 
     elif anim_type == "Rolagem (baixo→cima)":
-        offset_y = int(H - t * (H + H))
+        # Cada bloco sobe individualmente: progress=0 texto abaixo, progress=1 posicao final
+        if block_local_t is not None and block_duration is not None and block_duration > 0:
+            raw = block_local_t / block_duration
+            # Sobe nos primeiros 60% do tempo, fica parado nos 40% restantes
+            scroll_frac = min(raw / 0.6, 1.0)
+            # Ease-out cubico: desacelera ao chegar
+            prog = 1.0 - (1.0 - scroll_frac) ** 3
+        else:
+            prog = max(0.0, min(1.0, t))
+
+        # offset_y: de H (abaixo da tela) ate 0 (posicao normal do texto)
+        offset_y = int(H * (1.0 - prog))
         shifted = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        shifted.paste(text_layer, (0, offset_y))
+        if offset_y < H:
+            region = text_layer.crop((0, 0, W, H - offset_y))
+            shifted.paste(region, (0, offset_y))
         result = Image.alpha_composite(base_pil, shifted)
         return cv2.cvtColor(np.array(result.convert("RGB")), cv2.COLOR_RGB2BGR)
 
@@ -3602,9 +4094,10 @@ def _apply_text_animation(
         return cv2.cvtColor(np.array(result.convert("RGB")), cv2.COLOR_RGB2BGR)
 
     else:
+        # Fallback para estático
         result = Image.alpha_composite(base_pil, text_layer)
         return cv2.cvtColor(np.array(result.convert("RGB")), cv2.COLOR_RGB2BGR)
-        
+            
 def _apply_image_adjustment(
     img: Image.Image,
     target_w: int,
@@ -3702,8 +4195,8 @@ def _build_video_from_slides_enhanced(
     frame_config: Dict = None,
     fit_mode: str = "cover",
     background_config: Dict = None,
-    dynamic_text: bool = False,          # NOVO PARÂMETRO
-    legenda_blocks: List = None           # NOVO: lista de (texto, t0, t1)
+    dynamic_text: bool = False,
+    legenda_blocks: List = None
 ) -> str:
     import subprocess
     import tempfile
@@ -3718,9 +4211,21 @@ def _build_video_from_slides_enhanced(
     total_slides = len(slides)
     global_time = 0.0
 
+    # ========== PRÉ-RENDERIZAÇÃO DAS CAMADAS DE TEXTO (CACHE) ==========
+    text_layer_cache = {}  # chave: (texto, W, H, tuple(sorted(tcfg.items()))) -> Image
+
+    def get_cached_text_layer(txt: str, W: int, H: int, cfg: dict) -> Image.Image:
+        # Cria uma chave única para o cache (ignorando variações pequenas)
+        key = (txt, W, H, tuple(sorted((k, v) for k, v in cfg.items() if k != "font_size")))
+        if key not in text_layer_cache:
+            text_layer_cache[key] = _render_text_layer(txt, W, H, cfg)
+        return text_layer_cache[key]
+    # ===================================================================
+
     for si, slide_data in enumerate(slides):
         if progress_cb:
-            progress_cb((si + 0.5) / total_slides * 0.8)
+            # Atualiza progresso no início de cada slide
+            progress_cb((si) / total_slides * 0.8)
 
         # Extrai dados do slide (pode ter 4 ou 5 elementos)
         if len(slide_data) == 4:
@@ -3752,8 +4257,9 @@ def _build_video_from_slides_enhanced(
 
         base_bgr = cv2.cvtColor(np.array(slide_img), cv2.COLOR_RGB2BGR)
         n_frames = max(1, int(dur_s * fps))
-        # Pré-renderiza a camada de texto para o slide (pode ser ignorada se dynamic_text=True)
-        text_layer = _render_text_layer(text or "", target_width, target_height, tcfg)
+
+        # Pré-renderiza a camada de texto FIXA do slide (usada quando dynamic_text=False)
+        static_text_layer = get_cached_text_layer(text or "", target_width, target_height, tcfg)
 
         def _calc_interval_progress(t_g: float) -> Optional[float]:
             if legenda_interval_end > legenda_interval_start:
@@ -3774,17 +4280,21 @@ def _build_video_from_slides_enhanced(
                 return default_anim_type
             return atype
 
-        # --- FUNÇÃO AUXILIAR PARA OBTER O TEXTO ATIVO EM dynamic_text MODE ---
-        def _get_active_text(t_g: float) -> str:
-            if not dynamic_text or not legenda_blocks:
-                return text  # fallback para o texto fixo do slide
-            # Procura o bloco cujo intervalo contém t_g
-            for blk_text, t0, t1 in legenda_blocks:
-                if t0 <= t_g <= t1:
-                    return blk_text
-            return ""  # fora de qualquer bloco, sem texto
+        def _get_active_text_and_layer(t_g: float):
+            """Retorna (texto_atual, camada_pronta) para o tempo t_g."""
+            if dynamic_text and legenda_blocks:
+                for blk_text, t0, t1 in legenda_blocks:
+                    if t0 <= t_g < t1:
+                        layer = get_cached_text_layer(blk_text, target_width, target_height, tcfg)
+                        return blk_text, layer
+                # Fora de qualquer bloco → sem texto
+                empty = get_cached_text_layer("", target_width, target_height, tcfg)
+                return "", empty
+            else:
+                # Modo estático: usa o texto fixo do slide
+                return text or "", static_text_layer
 
-        # Transição dissolve
+        # Transição dissolve (entre slides)
         if si > 0 and transition_frames > 0:
             for tf in range(transition_frames):
                 alpha = tf / transition_frames
@@ -3793,15 +4303,25 @@ def _build_video_from_slides_enhanced(
                 )
                 t_global_tf = global_time + (tf / fps)
                 anim_type_tf = _resolve_anim(t_global_tf)
-                ip = _calc_interval_progress(t_global_tf)
+                # No modo dinâmico, interval_progress é gerenciado pelo bloco; passa 1.0
+                ip = 1.0 if dynamic_text else _calc_interval_progress(t_global_tf)
 
-                # ---- NOVO: seleciona texto dinâmico se habilitado ----
-                current_text = _get_active_text(t_global_tf) if dynamic_text else (text or "")
-                current_layer = _render_text_layer(current_text, target_width, target_height, tcfg)
+                current_text, current_layer = _get_active_text_and_layer(t_global_tf)
+
+                # Calcula tempo local dentro do bloco ativo (para fade in/out suave)
+                blk_local_tf = None
+                blk_dur_tf = None
+                if dynamic_text and legenda_blocks:
+                    for blk_text, t0, t1 in legenda_blocks:
+                        if t0 <= t_global_tf < t1:
+                            blk_local_tf = t_global_tf - t0
+                            blk_dur_tf   = t1 - t0
+                            break
 
                 final_frame = _apply_text_animation(
                     blended_base, current_layer, anim_type_tf, tf, n_frames, fps,
                     current_text, tcfg, interval_progress=ip,
+                    block_local_t=blk_local_tf, block_duration=blk_dur_tf,
                 )
                 fname = os.path.join(tmp_dir, f"frame_{frame_idx:06d}.jpg")
                 cv2.imwrite(fname, final_frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
@@ -3810,16 +4330,32 @@ def _build_video_from_slides_enhanced(
 
         # Frames principais do slide
         for fi in range(n_frames):
+            # Atualiza progresso a cada 10% dos frames do slide (evita interface travada)
+            if progress_cb and fi % max(1, n_frames // 10) == 0:
+                intra_progress = (si + fi / n_frames) / total_slides
+                progress_cb(intra_progress * 0.8)
+
             t_global = global_time + (fi / fps)
             anim_type_fi = _resolve_anim(t_global)
-            ip = _calc_interval_progress(t_global)
+            # No modo dinâmico, interval_progress é gerenciado pelo bloco; passa 1.0
+            ip = 1.0 if dynamic_text else _calc_interval_progress(t_global)
 
-            current_text = _get_active_text(t_global) if dynamic_text else (text or "")
-            current_layer = _render_text_layer(current_text, target_width, target_height, tcfg)
+            current_text, current_layer = _get_active_text_and_layer(t_global)
+
+            # Calcula tempo local dentro do bloco ativo (para fade in/out suave)
+            blk_local = None
+            blk_dur   = None
+            if dynamic_text and legenda_blocks:
+                for blk_text, t0, t1 in legenda_blocks:
+                    if t0 <= t_global < t1:
+                        blk_local = t_global - t0
+                        blk_dur   = t1 - t0
+                        break
 
             final_frame = _apply_text_animation(
                 base_bgr, current_layer, anim_type_fi, fi, n_frames, fps,
                 current_text, tcfg, interval_progress=ip,
+                block_local_t=blk_local, block_duration=blk_dur,
             )
             fname = os.path.join(tmp_dir, f"frame_{frame_idx:06d}.jpg")
             cv2.imwrite(fname, final_frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
@@ -3847,8 +4383,9 @@ def _build_video_from_slides_enhanced(
         cmd.append("-shortest")
     cmd.extend(["-t", str(total_duration), output_path])
 
+    if progress_cb:
+        progress_cb(0.9)
     subprocess.run(cmd, capture_output=True, timeout=600)
-
     if progress_cb:
         progress_cb(1.0)
 
@@ -4082,7 +4619,7 @@ def tab_montagem():
     with sub_b:
         ANIM_OPTIONS = {
             "Estático": "Texto fixo, sem movimento.",
-            "Rolagem (baixo→cima)": "Texto sobe continuamente como créditos de filme.",
+            "Rolagem (baixo→cima)": "Cada bloco de legenda sobe de baixo da tela até a posição configurada, sincronizado com o timestamp.",
             "Fade In": "Texto aparece gradualmente do transparente ao sólido.",
             "Fade Out": "Texto some gradualmente ao longo do slide.",
             "Typewriter (letra a letra)": "Texto digita-se letra por letra da esquerda para direita.",
@@ -4265,7 +4802,7 @@ def tab_montagem():
                     offset_x=off_x,
                     offset_y=off_y
                 )
-                st.image(preview_adj, caption=f"Preview slide {i+1}", use_container_width=True)
+                st.image(pil_to_stable_path(preview_adj, f"slide{i}"), caption=f"Preview slide {i+1}", use_container_width=True)
 
         # ---------------------------------------------------------------------
         # PASSO 2.6: FUNDO PERSONALIZADO (para modo Enquadrar)
@@ -4314,7 +4851,7 @@ def tab_montagem():
         if bg_type == "Imagem" and bg_image:
             preview_bg = bg_image.copy()
             preview_bg.thumbnail((320, 180))
-            st.image(preview_bg, caption="Pré-visualização do fundo", use_container_width=True)
+            st.image(pil_to_stable_path(preview_bg, "bg_prev"), caption="Pré-visualização do fundo", use_container_width=True)
         else:
             st.markdown(f"<div style='width:100%;height:60px;background:{bg_color};border-radius:6px;'></div>", unsafe_allow_html=True)
             st.caption(f"Cor de fundo: {bg_color}")
@@ -4598,7 +5135,7 @@ def tab_montagem():
                 bg_box_color=bg_box_color,
                 bg_box_alpha=bg_box_alpha,
             )
-            st.image(preview_result, caption="Preview estático (resultado similar)", use_container_width=True)
+            st.image(pil_to_stable_path(preview_result, "text_prev"), caption="Preview estático (resultado similar)", use_container_width=True)
         except Exception as e:
             st.error(f"Erro no preview: {e}")
 
@@ -4778,7 +5315,7 @@ def tab_montagem():
                     "espessura": moldura_espessura
                 }
                 preview_img_moldura = apply_frame(preview_img_moldura, frame_cfg)
-            st.image(preview_img_moldura, caption=f"Preview com moldura ({vid_width}x{vid_height})", use_container_width=True)
+            st.image(pil_to_stable_path(preview_img_moldura, "frame_prev"), caption=f"Preview com moldura ({vid_width}x{vid_height})", use_container_width=True)
 
         # ---------------------------------------------------------------------
         # ROTEIRO TXT
@@ -4919,10 +5456,8 @@ def tab_montagem():
                                 )
                                 final_audio_ext = "wav"
 
-                        # Dentro do if st.button("🚀 GERAR VÍDEO SINCRONIZADO"):
-
-                        # Verifica se deve usar o modo dinâmico (apenas 1 imagem E temos blocos de legenda)
-                        usar_dynamic_text = (n_imgs == 1) and (len(legenda_blocks_abs) > 0)
+                        # Modo dinâmico: ativo sempre que temos blocos com timestamps definidos
+                        usar_dynamic_text = (len(legenda_blocks_abs) > 0) and (modo_legenda == "Blocos proporcionais ao WPM")
 
                         _build_video_from_slides_enhanced(
                             slides_data,
