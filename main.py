@@ -2972,13 +2972,51 @@ def tab_ia_audio():
             if ap and os.path.exists(ap):
                 with open(ap,"rb") as f:
                     st.audio(f.read(), format="audio/mp3")
+
+                # ── Modo de transcrição ──────────────────────────────────────
+                modo_transcr = st.radio(
+                    "Modo de transcrição:",
+                    ["📄 Texto simples", "🎬 Legenda com timestamps"],
+                    horizontal=True,
+                    key="transcr_modo",
+                    help=(
+                        "**Texto simples** — extrai apenas o conteúdo falado.\n\n"
+                        "**Legenda com timestamps** — gera blocos no formato "
+                        "`[seg] frase`, prontos para sincronizar com vídeo."
+                    ),
+                )
+                usar_legenda = modo_transcr.startswith("🎬")
+
                 if st.button("📝 TRANSCREVER", type="primary", key="do_transcribe",
                              help="Inicia a transcrição. Pode levar alguns segundos."):
                     with st.spinner("Transcrevendo com Whisper (aguarde)..."):
                         try:
                             model = whisper.load_model("base")
-                            result = model.transcribe(ap, language="pt", fp16=False)
-                            st.session_state.transcribed_text = result["text"]
+                            result = model.transcribe(
+                                ap, language="pt", fp16=False,
+                                word_timestamps=False,
+                                verbose=False,
+                            )
+                            if usar_legenda:
+                                # Monta formato [seg] frase a partir dos segmentos
+                                segments = result.get("segments", [])
+                                if segments:
+                                    linhas = []
+                                    for seg in segments:
+                                        t_start = round(seg["start"], 1)
+                                        texto   = seg["text"].strip()
+                                        if texto:
+                                            linhas.append(f"[{t_start}] {texto}")
+                                    linhas.append("")          # linha vazia final
+                                    st.session_state.transcribed_text = "\n".join(linhas)
+                                else:
+                                    # fallback: sem segmentos, usa texto bruto
+                                    st.session_state.transcribed_text = result["text"]
+                                    st.warning("Whisper não retornou segmentos; exibindo texto simples.")
+                            else:
+                                st.session_state.transcribed_text = result["text"]
+
+                            st.session_state["_transcr_legenda"] = usar_legenda
                             st.success("✅ Transcrição concluída!")
                         except Exception as e:
                             st.error(f"Erro: {e}")
@@ -2987,20 +3025,82 @@ def tab_ia_audio():
 
         if st.session_state.transcribed_text:
             st.markdown("---")
-            edited = st.text_area("Texto transcrito (editável):",
-                                  value=st.session_state.transcribed_text,
-                                  height=250, key="transcr_edit",
-                                  help="Você pode editar o texto antes de baixar ou usar em outras ferramentas.")
+            _eh_legenda = st.session_state.get("_transcr_legenda", False)
+            label_area  = "Legenda com timestamps (editável):" if _eh_legenda else "Texto transcrito (editável):"
+            edited = st.text_area(
+                label_area,
+                value=st.session_state.transcribed_text,
+                height=300, key="transcr_edit",
+                help=(
+                    "Edite livremente. Formato legenda: `[seg] frase` por linha."
+                    if _eh_legenda
+                    else "Você pode editar o texto antes de baixar ou usar em outras ferramentas."
+                ),
+            )
             st.session_state.transcribed_text = edited
+
             wc = len(edited.split())
-            c1,c2,c3 = st.columns(3)
+            c1, c2, c3 = st.columns(3)
             c1.metric("Palavras",   wc)
             c2.metric("Caracteres", len(edited))
             c3.metric("Leitura",    f"{round(wc/150,1)} min")
-            st.download_button("⬇️ Baixar TXT",
-                edited.encode("utf-8"),
-                f"transcricao_{st.session_state.project_name}.txt",
-                "text/plain", key="dl_txt")
+
+            # ── Botões de download ───────────────────────────────────────────
+            nome_base = st.session_state.project_name
+            if _eh_legenda:
+                dl1, dl2 = st.columns(2)
+                dl1.download_button(
+                    "⬇️ Baixar TXT (legenda)",
+                    edited.encode("utf-8"),
+                    f"legenda_{nome_base}.txt",
+                    "text/plain", key="dl_leg_txt",
+                )
+                # Exporta também como SRT para uso em editores de vídeo
+                def _txt_to_srt(txt: str) -> str:
+                    """Converte formato [seg] frase → SRT padrão."""
+                    import re as _re
+                    lines   = [l for l in txt.splitlines() if l.strip()]
+                    srt_out = []
+                    idx     = 1
+                    for i, line in enumerate(lines):
+                        m = _re.match(r"^\[(\d+(?:\.\d+)?)\]\s*(.*)", line)
+                        if not m:
+                            continue
+                        t_s  = float(m.group(1))
+                        text = m.group(2).strip()
+                        if not text:
+                            continue
+                        # Duração até próxima entrada ou +4s
+                        if i + 1 < len(lines):
+                            m2 = _re.match(r"^\[(\d+(?:\.\d+)?)\]", lines[i + 1])
+                            t_e = float(m2.group(1)) if m2 else t_s + 4.0
+                        else:
+                            t_e = t_s + 4.0
+                        def _fmt(s):
+                            hh = int(s // 3600); mm = int((s % 3600) // 60)
+                            ss = int(s % 60);    ms = int(round((s - int(s)) * 1000))
+                            return f"{hh:02d}:{mm:02d}:{ss:02d},{ms:03d}"
+                        srt_out.append(f"{idx}\n{_fmt(t_s)} --> {_fmt(t_e)}\n{text}\n")
+                        idx += 1
+                    return "\n".join(srt_out)
+
+                srt_content = _txt_to_srt(edited)
+                dl2.download_button(
+                    "⬇️ Baixar SRT (editor de vídeo)",
+                    srt_content.encode("utf-8"),
+                    f"legenda_{nome_base}.srt",
+                    "text/plain", key="dl_leg_srt",
+                )
+                if srt_content:
+                    with st.expander("👁️ Preview SRT"):
+                        st.code(srt_content[:2000], language=None)
+            else:
+                st.download_button(
+                    "⬇️ Baixar TXT",
+                    edited.encode("utf-8"),
+                    f"transcricao_{nome_base}.txt",
+                    "text/plain", key="dl_txt",
+                )
 
     with sub3:
         st.markdown("**Analise seu conteúdo e gere prompts prontos para ChatGPT, Midjourney, Suno...**")
