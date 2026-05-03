@@ -46,12 +46,33 @@ def check_and_install_dependencies():
         "edge_tts": "edge-tts",
         "whisper": "openai-whisper",
     }
+
+    # torch e openai-whisper nao tem suporte oficial no Python 3.13+
+    # Tentar importa-los causa OSError de DLL -- pula silenciosamente
+    _sem_suporte_py313 = {"whisper", "torch", "torchvision"}
+    _py_ver = sys.version_info
+    _incompativel = _py_ver >= (3, 13)
+
     missing = []
     for mod, pkg in required.items():
+        if _incompativel and mod in _sem_suporte_py313:
+            print(
+                f"AVISO: '{pkg}' ignorado: sem suporte para Python "
+                f"{_py_ver.major}.{_py_ver.minor} (requer Python <= 3.12)"
+            )
+            continue
         try:
             __import__(mod)
         except ImportError:
             missing.append(pkg)
+        except (OSError, Exception) as e:
+            # OSError = DLL quebrada (ex: c10.dll do torch)
+            # Nao reinstala -- o problema e de compatibilidade de versao do Python
+            print(
+                f"AVISO: '{mod}' instalado mas falhou ao carregar "
+                f"({type(e).__name__}). Verifique compatibilidade com Python "
+                f"{_py_ver.major}.{_py_ver.minor}."
+            )
     if missing:
         print(f"Instalando pacotes faltantes: {missing}")
         subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet"] + missing)
@@ -1210,10 +1231,10 @@ def render_sidebar():
                         unsafe_allow_html=True)
             if st.session_state.video_frame:
                 st.image(pil_to_stable_path(st.session_state.video_frame, "vframe"),
-                         caption="Frame atual", use_container_width=True)
+                         caption="Frame atual", width='stretch')
         elif st.session_state.base_image:
             st.image(pil_to_stable_path(st.session_state.base_image, "base"),
-                     caption="Imagem carregada", use_container_width=True)
+                     caption="Imagem carregada", width='stretch')
         else:
             st.markdown('<div class="card cl">Nenhuma mídia carregada.</div>',
                         unsafe_allow_html=True)
@@ -1794,7 +1815,7 @@ def tab_video():
                         retime_bytes,
                         f"{st.session_state.project_name}_retiming.mp4",
                         "video/mp4",
-                        use_container_width=True,
+                        width='stretch',
                         key="dl_retime"
                     )
                 else:
@@ -1828,7 +1849,7 @@ def tab_video():
         with col_img2:
             st.image(pil_to_stable_path(st.session_state.video_frame, "vf_tab"),
                      caption=f"Frame em {st.session_state._current_frame_sec:.1f}s — use na aba Filtros!",
-                     use_container_width=False)
+                     width='content')
         st.markdown("<br>", unsafe_allow_html=True)
 
     st.markdown("---")
@@ -2039,7 +2060,7 @@ def tab_video():
             st.session_state._export_video,
             f"{st.session_state.project_name}_editado.mp4",
             "video/mp4",
-            use_container_width=True,
+            width='stretch',
             key="dl_mp4_final"
         )
 
@@ -2288,7 +2309,7 @@ def tab_video():
 
             if st.button("🚀 GERAR MONTAGEM ÂNCORA", type="primary",
                          key="ancora_generate_btn",
-                         use_container_width=True,
+                         width='stretch',
                          help="Processa a montagem completa: âncora + todos os vídeos secundários inseridos nos intervalos definidos."):
 
                 ancora_path = st.session_state.ancora_saved_path
@@ -2506,7 +2527,7 @@ def tab_video():
                     st.session_state.ancora_result,
                     f"{st.session_state.project_name}_montagem_ancora.mp4",
                     "video/mp4",
-                    use_container_width=True,
+                    width='stretch',
                     key="dl_ancora_final"
                 )
 
@@ -2647,9 +2668,9 @@ def tab_filtros():
 
         col_ba, col_dp = st.columns(2)
         with col_ba:
-            st.image(pil_to_stable_path(source, "orig"), caption="📷 Original", use_container_width=True)
+            st.image(pil_to_stable_path(source, "orig"), caption="📷 Original", width='stretch')
         with col_dp:
-            st.image(pil_to_stable_path(processed, "proc"), caption="✨ Com Efeitos", use_container_width=True)
+            st.image(pil_to_stable_path(processed, "proc"), caption="✨ Com Efeitos", width='stretch')
 
         st.markdown("---")
         st.markdown("**📥 EXPORTAR IMAGEM:**")
@@ -2658,17 +2679,17 @@ def tab_filtros():
             st.download_button("💾 PNG",
                 img_to_bytes(processed,"PNG"),
                 f"{st.session_state.project_name}.png","image/png",
-                use_container_width=True, key="dl_png")
+                width='stretch', key="dl_png")
         with col_e2:
             st.download_button("💾 JPG",
                 img_to_bytes(processed,"JPEG",93),
                 f"{st.session_state.project_name}.jpg","image/jpeg",
-                use_container_width=True, key="dl_jpg")
+                width='stretch', key="dl_jpg")
         with col_e3:
             st.download_button("💾 WEBP",
                 img_to_bytes(processed,"WEBP",90),
                 f"{st.session_state.project_name}.webp","image/webp",
-                use_container_width=True, key="dl_webp")
+                width='stretch', key="dl_webp")
 
 def tab_animacoes():
     st.markdown('<div class="stitle">🎬 ANIMAÇÕES & GIF ANIMADO</div>', unsafe_allow_html=True)
@@ -2713,11 +2734,11 @@ def tab_animacoes():
         col_gb1, col_gb2 = st.columns(2)
         with col_gb1:
             gen_btn = st.button("🎬 GERAR GIF", type="primary",
-                                key="gen_gif_btn", use_container_width=True,
+                                key="gen_gif_btn", width='stretch',
                                 help="Clique para criar o GIF com as configurações atuais.")
         with col_gb2:
             prev_btn = st.button("👁️ Preview Frame", type="secondary",
-                                 key="prev_frame_btn", use_container_width=True,
+                                 key="prev_frame_btn", width='stretch',
                                  help="Mostra uma prévia estática do meio da animação.")
 
         if prev_btn:
@@ -2731,7 +2752,7 @@ def tab_animacoes():
                     y = random.randint(0,test_frame.height-1)
                     arr[y,:] = np.roll(arr[y,:], random.randint(-15,15), axis=0)
                 test_frame = Image.fromarray(arr)
-            st.image(pil_to_stable_path(test_frame.convert("RGB"), "anim_prev"), caption="Preview frame do meio", use_container_width=True)
+            st.image(pil_to_stable_path(test_frame.convert("RGB"), "anim_prev"), caption="Preview frame do meio", width='stretch')
 
         if gen_btn:
             if not sels:
@@ -2760,12 +2781,12 @@ def tab_animacoes():
                 st.session_state._gif_data,
                 f"{st.session_state.project_name}_animacao.gif",
                 "image/gif",
-                use_container_width=True,
+                width='stretch',
                 key="dl_gif_final"
             )
         else:
             st.image(pil_to_stable_path(base, "anim_base"), caption="Imagem base — aguardando geração do GIF",
-                     use_container_width=True)
+                     width='stretch')
             st.markdown("""
             <div class="card cg">
             💡 <b>Dica:</b> Você pode combinar múltiplos efeitos!<br>
@@ -2793,7 +2814,7 @@ def tab_screenshot():
             st.session_state.screenshot_data = img
             st.session_state.base_image = img
             st.success("✅ Screenshot carregado! Disponível em Filtros & Animações.")
-            st.image(pil_to_stable_path(img, "ss_upload"), use_container_width=True)
+            st.image(pil_to_stable_path(img, "ss_upload"), width='stretch')
         st.markdown("""
         <div class="card cl">
         Use a API do <b>ScreenshotMachine</b> ou similar.
@@ -2819,7 +2840,7 @@ def tab_screenshot():
                             st.session_state.screenshot_data = img
                             st.session_state.base_image = img
                             st.success("✅ Screenshot capturado!")
-                            st.image(pil_to_stable_path(img, "ss_url"), use_container_width=True)
+                            st.image(pil_to_stable_path(img, "ss_url"), width='stretch')
                     except Exception as e:
                         st.error(f"Erro: {e}")
             elif not api_key:
@@ -2881,14 +2902,14 @@ def tab_screenshot():
                     "posicao": {"horizontal":apos_h,"vertical":apos_v},
                     "contorno": {"ativo":True,"cor":"#000000","espessura":2},
                 })
-            st.image(pil_to_stable_path(edited, "ss_edit"), caption="Screenshot editado", use_container_width=True)
+            st.image(pil_to_stable_path(edited, "ss_edit"), caption="Screenshot editado", width='stretch')
 
             col_dl1, col_dl2 = st.columns(2)
             with col_dl1:
                 st.download_button("⬇️ PNG",
                     img_to_bytes(edited,"PNG"),
                     "screenshot_editado.png","image/png",
-                    use_container_width=True, key="dl_ss_png")
+                    width='stretch', key="dl_ss_png")
             with col_dl2:
                 if st.button("📋 Usar como base p/ Filtros", key="ss_to_base",
                              help="Define esta imagem como a imagem base para as outras abas."):
@@ -2922,7 +2943,7 @@ def tab_ia_audio():
             st.markdown(f"**Código:** `{VOICE_PROFILES[vk]['code']}`")
 
         if st.button("🔊 GERAR NARRAÇÃO", type="primary", key="gen_tts",
-                     use_container_width=True,
+                     width='stretch',
                      help="Clique para gerar o arquivo de áudio."):
             if tts_text and tts_text.strip():
                 with st.spinner("Gerando narração neural..."):
@@ -2935,7 +2956,7 @@ def tab_ia_audio():
                             abytes,
                             f"narracao_{st.session_state.project_name}.mp3",
                             "audio/mp3",
-                            use_container_width=True, key="dl_tts_mp3")
+                            width='stretch', key="dl_tts_mp3")
                         st.success("✅ Narração gerada!")
                     else:
                         st.error(f"Falha: {result}")
@@ -3001,7 +3022,7 @@ def tab_ia_audio():
                                    help="Nível de detalhamento dos prompts.")
 
         if st.button("🔍 ANALISAR & GERAR PROMPTS", type="primary",
-                     key="do_analyze", use_container_width=True,
+                     key="do_analyze", width='stretch',
                      help="Analisa o texto e gera prompts prontos para IAs."):
             if text_in.strip():
                 with st.spinner("Analisando..."):
@@ -3577,7 +3598,7 @@ def _render_playlist_ui(key_prefix: str = "playlist") -> tuple:
         with col_gen:
             if st.button("🎛️ MONTAR TRILHA COMPLETA", type="primary",
                          key=f"{key_prefix}_build",
-                         use_container_width=True,
+                         width='stretch',
                          help="Concatena todas as faixas com as transições configuradas."):
                 with st.spinner("🎼 Montando trilha — aguarde..."):
                     try:
@@ -3601,7 +3622,7 @@ def _render_playlist_ui(key_prefix: str = "playlist") -> tuple:
 
         with col_clear:
             if st.button("🗑️ Limpar playlist", key=f"{key_prefix}_clear",
-                         use_container_width=True):
+                         width='stretch'):
                 st.session_state[pl_key] = []
                 for k in [f"{key_prefix}_final_bytes", f"{key_prefix}_final_ext", f"{key_prefix}_final_dur"]:
                     st.session_state.pop(k, None)
@@ -3620,7 +3641,7 @@ def _render_playlist_ui(key_prefix: str = "playlist") -> tuple:
             data=fb,
             file_name=f"trilha_final_{key_prefix}.wav",
             mime="audio/wav",
-            use_container_width=True,
+            width='stretch',
             key=f"{key_prefix}_dl_final",
         )
         return fb, fe, fd
@@ -4001,27 +4022,28 @@ def _apply_text_animation(
         return cv2.cvtColor(np.array(result.convert("RGB")), cv2.COLOR_RGB2BGR)
 
     elif anim_type == "Rolagem (baixo→cima)":
-        # Cada bloco sobe individualmente: progress=0 texto abaixo, progress=1 posicao final
+        # Cada bloco sobe individualmente: progress=0 texto abaixo, progress=1 posição final
         if block_local_t is not None and block_duration is not None and block_duration > 0:
             raw = block_local_t / block_duration
             # Sobe nos primeiros 60% do tempo, fica parado nos 40% restantes
             scroll_frac = min(raw / 0.6, 1.0)
-            # Ease-out cubico: desacelera ao chegar
+            # Ease-out cúbico: desacelera ao chegar
             prog = 1.0 - (1.0 - scroll_frac) ** 3
         else:
             prog = max(0.0, min(1.0, t))
 
-        # offset_y: de H (abaixo da tela) ate 0 (posicao normal do texto)
+        # offset_y: de +H (abaixo da tela) até 0 (posição final do texto)
+        # prog=0 → texto fora da tela embaixo; prog=1 → texto na posição normal
         offset_y = int(H * (1.0 - prog))
         shifted = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        if offset_y < H:
-            region = text_layer.crop((0, 0, W, H - offset_y))
-            shifted.paste(region, (0, offset_y))
+        # Cola text_layer deslocado para baixo; a parte que sair do canvas é descartada
+        shifted.paste(text_layer, (0, offset_y), text_layer)
         result = Image.alpha_composite(base_pil, shifted)
         return cv2.cvtColor(np.array(result.convert("RGB")), cv2.COLOR_RGB2BGR)
 
     elif anim_type == "Fade In":
-        alpha_val = int(min(t * 2, 1.0) * 255)
+        # Fade completo ao longo de todo o bloco (não apenas nos primeiros 50%)
+        alpha_val = int(min(t, 1.0) * 255)
         faded = text_layer.copy()
         r, g, b, a = faded.split()
         a = a.point(lambda x: int(x * alpha_val / 255))
@@ -4030,7 +4052,8 @@ def _apply_text_animation(
         return cv2.cvtColor(np.array(result.convert("RGB")), cv2.COLOR_RGB2BGR)
 
     elif anim_type == "Fade Out":
-        alpha_val = int(max(1.0 - t * 2, 0.0) * 255)
+        # Fade completo ao longo de todo o bloco
+        alpha_val = int(max(1.0 - t, 0.0) * 255)
         faded = text_layer.copy()
         r, g, b, a = faded.split()
         a = a.point(lambda x: int(x * alpha_val / 255))
@@ -4047,10 +4070,20 @@ def _apply_text_animation(
         return cv2.cvtColor(np.array(result.convert("RGB")), cv2.COLOR_RGB2BGR)
 
     elif anim_type == "Palavra por Palavra":
-        words = text.split()
-        total_words = len(words)
-        words_to_show = max(1, int(t * total_words))
-        partial_text = " ".join(words[:words_to_show])
+        # Divide o bloco atual em palavras individuais (preserva pontuação)
+        raw_words = text.split()
+        if not raw_words:
+            return base_bgr.copy()
+        total_words = len(raw_words)
+        # Progresso dentro do bloco
+        if block_local_t is not None and block_duration is not None and block_duration > 0:
+            prog = max(0.0, min(1.0, block_local_t / block_duration))
+        else:
+            prog = max(0.0, min(1.0, t))
+        # Quantas palavras mostrar (acumulativo: constrói a frase)
+        words_to_show = max(1, int(prog * total_words + 0.5))
+        words_to_show = min(words_to_show, total_words)
+        partial_text = " ".join(raw_words[:words_to_show])
         partial_layer = _render_text_layer(partial_text, W, H, tcfg)
         result = Image.alpha_composite(base_pil, partial_layer)
         return cv2.cvtColor(np.array(result.convert("RGB")), cv2.COLOR_RGB2BGR)
@@ -4059,7 +4092,7 @@ def _apply_text_animation(
         ease = 1 - (1 - min(t * 1.5, 1.0)) ** 3
         offset_x = int((1 - ease) * W)
         shifted = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        shifted.paste(text_layer, (offset_x, 0))
+        shifted.paste(text_layer, (offset_x, 0), text_layer)
         result = Image.alpha_composite(base_pil, shifted)
         return cv2.cvtColor(np.array(result.convert("RGB")), cv2.COLOR_RGB2BGR)
 
@@ -4067,7 +4100,7 @@ def _apply_text_animation(
         ease = 1 - (1 - min(t * 1.5, 1.0)) ** 3
         offset_x = int(-(1 - ease) * W)
         shifted = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        shifted.paste(text_layer, (offset_x, 0))
+        shifted.paste(text_layer, (offset_x, 0), text_layer)
         result = Image.alpha_composite(base_pil, shifted)
         return cv2.cvtColor(np.array(result.convert("RGB")), cv2.COLOR_RGB2BGR)
 
@@ -4079,7 +4112,7 @@ def _apply_text_animation(
         zoomed = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         paste_x = (W - new_w) // 2
         paste_y = (H - new_h) // 2
-        zoomed.paste(resized, (paste_x, paste_y))
+        zoomed.paste(resized, (paste_x, paste_y), resized)
         result = Image.alpha_composite(base_pil, zoomed)
         return cv2.cvtColor(np.array(result.convert("RGB")), cv2.COLOR_RGB2BGR)
 
@@ -4303,12 +4336,9 @@ def _build_video_from_slides_enhanced(
                 )
                 t_global_tf = global_time + (tf / fps)
                 anim_type_tf = _resolve_anim(t_global_tf)
-                # No modo dinâmico, interval_progress é gerenciado pelo bloco; passa 1.0
-                ip = 1.0 if dynamic_text else _calc_interval_progress(t_global_tf)
-
                 current_text, current_layer = _get_active_text_and_layer(t_global_tf)
 
-                # Calcula tempo local dentro do bloco ativo (para fade in/out suave)
+                # Calcula tempo local dentro do bloco ativo (para animações sincronizadas)
                 blk_local_tf = None
                 blk_dur_tf = None
                 if dynamic_text and legenda_blocks:
@@ -4317,6 +4347,12 @@ def _build_video_from_slides_enhanced(
                             blk_local_tf = t_global_tf - t0
                             blk_dur_tf   = t1 - t0
                             break
+
+                # interval_progress: usa progresso dentro do bloco no modo dinâmico
+                if dynamic_text and blk_local_tf is not None and blk_dur_tf and blk_dur_tf > 0:
+                    ip = max(0.0, min(1.0, blk_local_tf / blk_dur_tf))
+                else:
+                    ip = _calc_interval_progress(t_global_tf)
 
                 final_frame = _apply_text_animation(
                     blended_base, current_layer, anim_type_tf, tf, n_frames, fps,
@@ -4337,12 +4373,9 @@ def _build_video_from_slides_enhanced(
 
             t_global = global_time + (fi / fps)
             anim_type_fi = _resolve_anim(t_global)
-            # No modo dinâmico, interval_progress é gerenciado pelo bloco; passa 1.0
-            ip = 1.0 if dynamic_text else _calc_interval_progress(t_global)
-
             current_text, current_layer = _get_active_text_and_layer(t_global)
 
-            # Calcula tempo local dentro do bloco ativo (para fade in/out suave)
+            # Calcula tempo local dentro do bloco ativo (para animações sincronizadas)
             blk_local = None
             blk_dur   = None
             if dynamic_text and legenda_blocks:
@@ -4351,6 +4384,12 @@ def _build_video_from_slides_enhanced(
                         blk_local = t_global - t0
                         blk_dur   = t1 - t0
                         break
+
+            # interval_progress: usa progresso dentro do bloco no modo dinâmico
+            if dynamic_text and blk_local is not None and blk_dur and blk_dur > 0:
+                ip = max(0.0, min(1.0, blk_local / blk_dur))
+            else:
+                ip = _calc_interval_progress(t_global)
 
             final_frame = _apply_text_animation(
                 base_bgr, current_layer, anim_type_fi, fi, n_frames, fps,
@@ -4582,7 +4621,7 @@ def tab_montagem():
             </div>
             """, unsafe_allow_html=True)
 
-        if st.button("✨ GERAR PROMPTS", type="primary", key="gen_mp", use_container_width=True,
+        if st.button("✨ GERAR PROMPTS", type="primary", key="gen_mp", width='stretch',
                      help="Gera prompts prontos para ferramentas de IA de áudio e imagem."):
             prompts = {
                 "🎨 Prompt Imagem": (f"Crie imagem {tema.lower()} sobre '{conceito}'. "
@@ -4734,7 +4773,7 @@ def tab_montagem():
         for i, (col, f) in enumerate(zip(thumb_cols, imgs_up[:6])):
             img = Image.open(f)
             img.thumbnail((200, 113))
-            col.image(img, caption=f"{i+1}: {secs_each:.1f}s", use_container_width=True)
+            col.image(img, caption=f"{i+1}: {secs_each:.1f}s", width='stretch')
         if n_imgs > 6:
             st.caption(f"... e mais {n_imgs - 6} imagem(ns).")
 
@@ -4802,7 +4841,7 @@ def tab_montagem():
                     offset_x=off_x,
                     offset_y=off_y
                 )
-                st.image(pil_to_stable_path(preview_adj, f"slide{i}"), caption=f"Preview slide {i+1}", use_container_width=True)
+                st.image(pil_to_stable_path(preview_adj, f"slide{i}"), caption=f"Preview slide {i+1}", width='stretch')
 
         # ---------------------------------------------------------------------
         # PASSO 2.6: FUNDO PERSONALIZADO (para modo Enquadrar)
@@ -4851,7 +4890,7 @@ def tab_montagem():
         if bg_type == "Imagem" and bg_image:
             preview_bg = bg_image.copy()
             preview_bg.thumbnail((320, 180))
-            st.image(pil_to_stable_path(preview_bg, "bg_prev"), caption="Pré-visualização do fundo", use_container_width=True)
+            st.image(pil_to_stable_path(preview_bg, "bg_prev"), caption="Pré-visualização do fundo", width='stretch')
         else:
             st.markdown(f"<div style='width:100%;height:60px;background:{bg_color};border-radius:6px;'></div>", unsafe_allow_html=True)
             st.caption(f"Cor de fundo: {bg_color}")
@@ -5135,7 +5174,7 @@ def tab_montagem():
                 bg_box_color=bg_box_color,
                 bg_box_alpha=bg_box_alpha,
             )
-            st.image(pil_to_stable_path(preview_result, "text_prev"), caption="Preview estático (resultado similar)", use_container_width=True)
+            st.image(pil_to_stable_path(preview_result, "text_prev"), caption="Preview estático (resultado similar)", width='stretch')
         except Exception as e:
             st.error(f"Erro no preview: {e}")
 
@@ -5315,14 +5354,14 @@ def tab_montagem():
                     "espessura": moldura_espessura
                 }
                 preview_img_moldura = apply_frame(preview_img_moldura, frame_cfg)
-            st.image(pil_to_stable_path(preview_img_moldura, "frame_prev"), caption=f"Preview com moldura ({vid_width}x{vid_height})", use_container_width=True)
+            st.image(pil_to_stable_path(preview_img_moldura, "frame_prev"), caption=f"Preview com moldura ({vid_width}x{vid_height})", width='stretch')
 
         # ---------------------------------------------------------------------
         # ROTEIRO TXT
         # ---------------------------------------------------------------------
         st.markdown("---")
         st.markdown("### 📄 Roteiro de Montagem")
-        if st.button("📄 Gerar Roteiro TXT", key="gen_rot", use_container_width=True):
+        if st.button("📄 Gerar Roteiro TXT", key="gen_rot", width='stretch'):
             rot = f"ROTEIRO DE MONTAGEM SINCRONIZADA — {st.session_state.project_name}\n"
             rot += f"Gerado: {datetime.now().strftime('%d/%m/%Y %H:%M')}\n"
             rot += "=" * 65 + "\n\n"
@@ -5357,7 +5396,7 @@ def tab_montagem():
             st.download_button(
                 "⬇️ Baixar Roteiro TXT", rot.encode("utf-8"),
                 f"roteiro_{st.session_state.project_name}.txt",
-                "text/plain", use_container_width=True, key="dl_rot"
+                "text/plain", width='stretch', key="dl_rot"
             )
             st.success("✅ Roteiro gerado!")
 
@@ -5376,7 +5415,7 @@ def tab_montagem():
         if not audio_bytes:
             st.warning("⚠️ É necessário ter um áudio (trilha montada) para gerar o vídeo.")
         else:
-            if st.button("🚀 GERAR VÍDEO SINCRONIZADO", type="primary", key="gen_vid", use_container_width=True):
+            if st.button("🚀 GERAR VÍDEO SINCRONIZADO", type="primary", key="gen_vid", width='stretch'):
 
                 text_cfg = {
                     "font_size": font_size,
@@ -5500,7 +5539,7 @@ def tab_montagem():
                             vid_bytes,
                             f"montagem_{st.session_state.project_name}.mp4",
                             "video/mp4",
-                            use_container_width=True, key="dl_vid_mont"
+                            width='stretch', key="dl_vid_mont"
                         )
                     else:
                         st.error("❌ Falha ao gerar vídeo. Verifique se o FFmpeg está instalado.")
@@ -5540,32 +5579,32 @@ def tab_export():
                 st.download_button("⬇️ PNG (alta qualidade)",
                     img_to_bytes(img,"PNG"),
                     f"{st.session_state.project_name}.png","image/png",
-                    use_container_width=True, key="exp_png")
+                    width='stretch', key="exp_png")
             with col_d2:
                 st.download_button("⬇️ JPG (web)",
                     img_to_bytes(img,"JPEG",92),
                     f"{st.session_state.project_name}.jpg","image/jpeg",
-                    use_container_width=True, key="exp_jpg")
+                    width='stretch', key="exp_jpg")
         if st.session_state._gif_data:
             st.download_button("⬇️ GIF Animado",
                 st.session_state._gif_data,
                 f"{st.session_state.project_name}_anim.gif","image/gif",
-                use_container_width=True, key="exp_gif")
+                width='stretch', key="exp_gif")
         if st.session_state._export_video:
             st.download_button("⬇️ MP4 Editado",
                 st.session_state._export_video,
                 f"{st.session_state.project_name}_editado.mp4","video/mp4",
-                use_container_width=True, key="exp_mp4")
+                width='stretch', key="exp_mp4")
         if st.session_state.transcribed_text:
             st.download_button("⬇️ Transcrição (TXT)",
                 st.session_state.transcribed_text.encode("utf-8"),
                 f"transcricao_{st.session_state.project_name}.txt","text/plain",
-                use_container_width=True, key="exp_txt")
+                width='stretch', key="exp_txt")
         if st.session_state.enhanced_prompts:
             st.download_button("⬇️ Prompts de IA (JSON)",
                 json.dumps(st.session_state.enhanced_prompts, ensure_ascii=False, indent=2).encode(),
                 f"prompts_{st.session_state.project_name}.json","application/json",
-                use_container_width=True, key="exp_json")
+                width='stretch', key="exp_json")
 
     st.markdown("---")
     st.markdown("**📋 Status detalhado do sistema:**")
